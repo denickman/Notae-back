@@ -168,10 +168,10 @@ exports.callClaudeProxy = onCall(
         estimatedCost: `$${estimatedCost.toFixed(6)}`,
       });
 
-      // ✅ UPDATE LIFETIME REQUESTS
+      // ✅ UPDATE LIFETIME REQUESTS (statistics only)
       console.log('💾 Updating usage stats...');
       await userRef.update({
-        lifetimeRequests: admin.firestore.FieldValue.increment(1),  // ← LIFETIME
+        lifetimeAPIRequests: admin.firestore.FieldValue.increment(1),
         monthlyTokens: admin.firestore.FieldValue.increment(
           result.usage.input_tokens + result.usage.output_tokens
         ),
@@ -198,11 +198,13 @@ exports.callClaudeProxy = onCall(
       console.log('✅ Usage stats updated');
       console.log('🎉 Claude proxy completed successfully');
 
+      const voiceActionsLimit = userData.subscriptionTier === 'pro' ? 999999 : (userData.voiceActionsLimit || 3);
+      const voiceActionsUsed = userData.voiceActionsUsed || 0;
       return {
         content: result.content,
         stopReason: result.stop_reason,
         usage: result.usage,
-        remainingRequests: lifetimeLimit - ((userData.lifetimeRequests || 0) + 1),
+        remainingRequests: voiceActionsLimit - voiceActionsUsed,
       };
     } catch (error) {
       console.error('💥 CLAUDE PROXY ERROR:', {
@@ -283,27 +285,30 @@ exports.callWhisperProxy = onCall(
       if (!userDoc.exists) {
         console.log('📝 Creating new user document');
         await userRef.set({
-          deviceID: deviceID,                // ← СОХРАНЯЕМ DEVICE ID
-          lifetimeRequests: 0,               // ← LIFETIME вместо daily
-          lifetimeLimit: 3,                  // ← ЛИМИТ НАВСЕГДА
+          deviceID: deviceID,
+          voiceActionsUsed: 0,
+          voiceActionsLimit: 3,
+          lifetimeAPIRequests: 0,
           subscriptionTier: 'free',
           createdAt: admin.firestore.FieldValue.serverTimestamp(),
         });
       }
       
       let userData = userDoc.data() || {
-        lifetimeRequests: 0,
-        lifetimeLimit: 3,
+        voiceActionsUsed: 0,
+        voiceActionsLimit: 3,
+        lifetimeAPIRequests: 0,
         subscriptionTier: 'free'
       };
       
-      const lifetimeLimit = userData.subscriptionTier === 'pro' ? 999999 : (userData.lifetimeLimit || 3);
+      const voiceActionsLimit = userData.subscriptionTier === 'pro' ? 999999 : (userData.voiceActionsLimit || 3);
+      const voiceActionsUsed = userData.voiceActionsUsed || 0;
 
       console.log('📊 User data:', {
         subscriptionTier: userData.subscriptionTier,
-        lifetimeRequests: userData.lifetimeRequests || 0,
-        lifetimeLimit,
-        remainingRequests: lifetimeLimit - (userData.lifetimeRequests || 0),
+        voiceActionsUsed,
+        voiceActionsLimit,
+        remainingRequests: voiceActionsLimit - voiceActionsUsed,
         deviceID: deviceID.substring(0, 8) + '...',
       });
 
@@ -318,16 +323,16 @@ exports.callWhisperProxy = onCall(
         await userRef.update({ deviceID: deviceID });
       }
 
-      // ✅ ПРОВЕРЯЕМ LIFETIME ЛИМИТ
-      if ((userData.lifetimeRequests || 0) >= lifetimeLimit && userData.subscriptionTier === 'free') {
-        console.error('❌ Lifetime limit exceeded');
+      // ✅ ПРОВЕРЯЕМ ЛИМИТ НА VOICE ACTIONS
+      if (voiceActionsUsed >= voiceActionsLimit && userData.subscriptionTier === 'free') {
+        console.error('❌ Voice actions limit exceeded');
         throw new HttpsError(
           'resource-exhausted',
-          `LIFETIME_LIMIT_REACHED:${lifetimeLimit}:${userData.subscriptionTier}`,
+          `VOICE_ACTIONS_LIMIT_REACHED:${voiceActionsLimit}:${userData.subscriptionTier}`,
           {
-            limit: lifetimeLimit,
+            limit: voiceActionsLimit,
             tier: userData.subscriptionTier,
-            message: `LIFETIME_LIMIT_REACHED:${lifetimeLimit}:${userData.subscriptionTier}`
+            message: `VOICE_ACTIONS_LIMIT_REACHED:${voiceActionsLimit}:${userData.subscriptionTier}`
           }
         );
       }
@@ -397,7 +402,8 @@ exports.callWhisperProxy = onCall(
       // ✅ UPDATE LIFETIME REQUESTS
       console.log('💾 Updating usage stats...');
       await userRef.update({
-        lifetimeRequests: admin.firestore.FieldValue.increment(1),  // ← LIFETIME
+        voiceActionsUsed: admin.firestore.FieldValue.increment(1),
+        lifetimeAPIRequests: admin.firestore.FieldValue.increment(1),
         lastRequestAt: admin.firestore.FieldValue.serverTimestamp(),
       });
 
@@ -421,7 +427,7 @@ exports.callWhisperProxy = onCall(
 
       return {
         text: result.text,
-        remainingRequests: lifetimeLimit - ((userData.lifetimeRequests || 0) + 1),
+        remainingRequests: voiceActionsLimit - (voiceActionsUsed + 1),
       };
     } catch (error) {
       if (error instanceof HttpsError) {
@@ -471,39 +477,41 @@ exports.getUserUsage = onCall({region: 'us-central1'}, async (request) => {
   if (!userData) {
     await userRef.set({
       deviceID: deviceID,
-      lifetimeRequests: 0,
-      lifetimeLimit: 3,
+      voiceActionsUsed: 0,
+      voiceActionsLimit: 3,
+      lifetimeAPIRequests: 0,
       monthlyTokens: 0,
       subscriptionTier: 'free',
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
     });
     
     userData = {
-      lifetimeRequests: 0,
-      lifetimeLimit: 3,
+      voiceActionsUsed: 0,
+      voiceActionsLimit: 3,
+      lifetimeAPIRequests: 0,
       monthlyTokens: 0,
       subscriptionTier: 'free',
     };
   }
 
-  const lifetimeLimit = userData.subscriptionTier === 'pro' ? 999999 : (userData.lifetimeLimit || 3);
+  const voiceActionsLimit = userData.subscriptionTier === 'pro' ? 999999 : (userData.voiceActionsLimit || 3);
   const monthlyLimit = userData.subscriptionTier === 'pro' ? 10000000 : 100000;
   
-  const lifetimeRequests = userData.lifetimeRequests || 0;
-  const remaining = Math.max(0, lifetimeLimit - lifetimeRequests);
+  const voiceActionsUsed = userData.voiceActionsUsed || 0;
+  const remaining = Math.max(0, voiceActionsLimit - voiceActionsUsed);
 
   return {
-    // ✅ NEW FIELDS (lifetime):
-    lifetimeRequests: lifetimeRequests,
-    lifetimeLimit: lifetimeLimit,
-    remainingLifetime: remaining,
+    voiceActionsUsed: voiceActionsUsed,
+    voiceActionsLimit: voiceActionsLimit,
+    remainingVoiceActions: remaining,
     
     // ✅ OLD FIELDS (daily) - backwards compatibility aliases:
-    dailyRequests: lifetimeRequests,
-    dailyLimit: lifetimeLimit,
+    dailyRequests: voiceActionsUsed,
+    dailyLimit: voiceActionsLimit,
     remainingDaily: remaining,
     
     // Other fields:
+    lifetimeAPIRequests: userData.lifetimeAPIRequests || 0,
     monthlyTokens: userData.monthlyTokens || 0,
     monthlyLimit: monthlyLimit,
     remainingMonthly: Math.max(0, monthlyLimit - (userData.monthlyTokens || 0)),
