@@ -13,28 +13,7 @@ const anthropicApiKey = defineSecret('ANTHROPIC_API_KEY');
 const openaiApiKey = defineSecret('OPENAI_API_KEY');
 
 // ═══════════════════════════════════════════════════════
-// HELPER: Check and Reset Daily Limits
-// ═══════════════════════════════════════════════════════
-
-async function checkAndResetDailyLimit(userRef, userData) {
-  const now = new Date();
-  const lastReset = userData.lastResetAt?.toDate();
-  
-  // Проверяем нужен ли сброс (новый день)
-  if (!lastReset || lastReset.toDateString() !== now.toDateString()) {
-    console.log('🔄 Resetting daily limits for new day');
-    await userRef.update({
-      dailyRequests: 0,
-      lastResetAt: admin.firestore.FieldValue.serverTimestamp(),
-    });
-    return 0;
-  }
-  
-  return userData.dailyRequests || 0;
-}
-
-// ═══════════════════════════════════════════════════════
-// ФУНКЦИЯ 1: Claude Proxy (С ПРАВИЛЬНЫМ HttpsError)
+// ФУНКЦИЯ 1: Claude Proxy (LIFETIME LIMITS)
 // ═══════════════════════════════════════════════════════
 
 exports.callClaudeProxy = onCall(
@@ -65,6 +44,10 @@ exports.callClaudeProxy = onCall(
     });
 
     try {
+      // ✅ ПОЛУЧАЕМ DEVICE ID ИЗ ЗАПРОСА
+      const deviceID = request.data.deviceID || 'unknown';
+      console.log('📱 Device ID:', deviceID.substring(0, 8) + '...');
+      
       // Rate limiting with Firestore
       console.log('🔍 Checking rate limits...');
       const db = admin.firestore();
@@ -74,43 +57,53 @@ exports.callClaudeProxy = onCall(
       if (!userDoc.exists) {
         console.log('📝 Creating new user document');
         await userRef.set({
-          dailyRequests: 0,
+          deviceID: deviceID,                // ← СОХРАНЯЕМ DEVICE ID
+          lifetimeRequests: 0,               // ← LIFETIME вместо daily
+          lifetimeLimit: 3,                  // ← ЛИМИТ НАВСЕГДА
           monthlyTokens: 0,
           subscriptionTier: 'free',
           createdAt: admin.firestore.FieldValue.serverTimestamp(),
-          lastResetAt: admin.firestore.FieldValue.serverTimestamp(),
         });
       }
 
       let userData = userDoc.data() || {
-        dailyRequests: 0,
+        lifetimeRequests: 0,
+        lifetimeLimit: 3,
         subscriptionTier: 'free',
         monthlyTokens: 0
       };
       
-      // ✅ АВТОСБРОС ЛИМИТА
-      const currentRequests = await checkAndResetDailyLimit(userRef, userData);
-      userData.dailyRequests = currentRequests;
-      
-      const dailyLimit = userData.subscriptionTier === 'pro' ? 1000 : 5;
+      const lifetimeLimit = userData.subscriptionTier === 'pro' ? 999999 : (userData.lifetimeLimit || 3);
 
       console.log('📊 User data:', {
         subscriptionTier: userData.subscriptionTier,
-        dailyRequests: userData.dailyRequests,
-        dailyLimit,
-        remainingRequests: dailyLimit - userData.dailyRequests,
+        lifetimeRequests: userData.lifetimeRequests || 0,
+        lifetimeLimit,
+        remainingRequests: lifetimeLimit - (userData.lifetimeRequests || 0),
+        deviceID: deviceID.substring(0, 8) + '...',
       });
 
-      // ✅ ПРАВИЛЬНЫЙ СПОСОБ ВЫБРОСИТЬ ОШИБКУ ЛИМИТА
-      if (userData.dailyRequests >= dailyLimit) {
-        console.error('❌ Rate limit exceeded');
+      // ✅ ПРОВЕРЯЕМ DEVICE ID (защита от лайфхака)
+      if (userData.deviceID && userData.deviceID !== deviceID) {
+        console.warn('⚠️ Device ID mismatch - updating to new device', {
+          stored: userData.deviceID.substring(0, 8),
+          received: deviceID.substring(0, 8),
+          userId: userId
+        });
+        // Обновляем на новый deviceID (юзер мог сменить устройство)
+        await userRef.update({ deviceID: deviceID });
+      }
+
+      // ✅ ПРОВЕРЯЕМ LIFETIME ЛИМИТ
+      if ((userData.lifetimeRequests || 0) >= lifetimeLimit && userData.subscriptionTier === 'free') {
+        console.error('❌ Lifetime limit exceeded');
         throw new HttpsError(
           'resource-exhausted',
-          `DAILY_LIMIT_REACHED:${dailyLimit}:${userData.subscriptionTier}`,
+          `LIFETIME_LIMIT_REACHED:${lifetimeLimit}:${userData.subscriptionTier}`,
           {
-            limit: dailyLimit,
+            limit: lifetimeLimit,
             tier: userData.subscriptionTier,
-            message: `DAILY_LIMIT_REACHED:${dailyLimit}:${userData.subscriptionTier}`
+            message: `LIFETIME_LIMIT_REACHED:${lifetimeLimit}:${userData.subscriptionTier}`
           }
         );
       }
@@ -175,10 +168,10 @@ exports.callClaudeProxy = onCall(
         estimatedCost: `$${estimatedCost.toFixed(6)}`,
       });
 
-      // Update usage
+      // ✅ UPDATE LIFETIME REQUESTS
       console.log('💾 Updating usage stats...');
       await userRef.update({
-        dailyRequests: admin.firestore.FieldValue.increment(1),
+        lifetimeRequests: admin.firestore.FieldValue.increment(1),  // ← LIFETIME
         monthlyTokens: admin.firestore.FieldValue.increment(
           result.usage.input_tokens + result.usage.output_tokens
         ),
@@ -188,6 +181,7 @@ exports.callClaudeProxy = onCall(
       // Enhanced usage logging
       await db.collection('usage_logs').add({
         userId: userId,
+        deviceID: deviceID,
         timestamp: admin.firestore.FieldValue.serverTimestamp(),
         service: 'claude',
         model: 'claude-3-5-haiku-20241022',
@@ -208,7 +202,7 @@ exports.callClaudeProxy = onCall(
         content: result.content,
         stopReason: result.stop_reason,
         usage: result.usage,
-        remainingRequests: dailyLimit - (userData.dailyRequests + 1),
+        remainingRequests: lifetimeLimit - ((userData.lifetimeRequests || 0) + 1),
       };
     } catch (error) {
       console.error('💥 CLAUDE PROXY ERROR:', {
@@ -217,19 +211,17 @@ exports.callClaudeProxy = onCall(
         stack: error.stack,
       });
       
-      // ✅ Если это уже HttpsError - пробросить как есть
       if (error instanceof HttpsError) {
         throw error;
       }
       
-      // Иначе обернуть в internal
       throw new HttpsError('internal', error.message);
     }
   }
 );
 
 // ═══════════════════════════════════════════════════════
-// ФУНКЦИЯ 2: Whisper Proxy (С ПРАВИЛЬНЫМ HttpsError)
+// ФУНКЦИЯ 2: Whisper Proxy (LIFETIME LIMITS)
 // ═══════════════════════════════════════════════════════
 
 exports.callWhisperProxy = onCall(
@@ -278,6 +270,10 @@ exports.callWhisperProxy = onCall(
     }
 
     try {
+      // ✅ ПОЛУЧАЕМ DEVICE ID ИЗ ЗАПРОСА
+      const deviceID = request.data.deviceID || 'unknown';
+      console.log('📱 Device ID:', deviceID.substring(0, 8) + '...');
+      
       // Rate limiting with Firestore
       console.log('🔍 Checking rate limits...');
       const db = admin.firestore();
@@ -287,41 +283,51 @@ exports.callWhisperProxy = onCall(
       if (!userDoc.exists) {
         console.log('📝 Creating new user document');
         await userRef.set({
-          dailyRequests: 0,
+          deviceID: deviceID,                // ← СОХРАНЯЕМ DEVICE ID
+          lifetimeRequests: 0,               // ← LIFETIME вместо daily
+          lifetimeLimit: 3,                  // ← ЛИМИТ НАВСЕГДА
           subscriptionTier: 'free',
           createdAt: admin.firestore.FieldValue.serverTimestamp(),
-          lastResetAt: admin.firestore.FieldValue.serverTimestamp(),
         });
       }
       
       let userData = userDoc.data() || {
-        dailyRequests: 0,
+        lifetimeRequests: 0,
+        lifetimeLimit: 3,
         subscriptionTier: 'free'
       };
       
-      // ✅ АВТОСБРОС ЛИМИТА
-      const currentRequests = await checkAndResetDailyLimit(userRef, userData);
-      userData.dailyRequests = currentRequests;
-      
-      const dailyLimit = userData.subscriptionTier === 'pro' ? 1000 : 5;
+      const lifetimeLimit = userData.subscriptionTier === 'pro' ? 999999 : (userData.lifetimeLimit || 3);
 
       console.log('📊 User data:', {
         subscriptionTier: userData.subscriptionTier,
-        dailyRequests: userData.dailyRequests,
-        dailyLimit,
-        remainingRequests: dailyLimit - userData.dailyRequests,
+        lifetimeRequests: userData.lifetimeRequests || 0,
+        lifetimeLimit,
+        remainingRequests: lifetimeLimit - (userData.lifetimeRequests || 0),
+        deviceID: deviceID.substring(0, 8) + '...',
       });
 
-      // ✅ ПРАВИЛЬНЫЙ СПОСОБ ВЫБРОСИТЬ ОШИБКУ ЛИМИТА
-      if (userData.dailyRequests >= dailyLimit) {
-        console.error('❌ Rate limit exceeded');
+      // ✅ ПРОВЕРЯЕМ DEVICE ID (защита от лайфхака)
+      if (userData.deviceID && userData.deviceID !== deviceID) {
+        console.warn('⚠️ Device ID mismatch - updating to new device', {
+          stored: userData.deviceID.substring(0, 8),
+          received: deviceID.substring(0, 8),
+          userId: userId
+        });
+        // Обновляем на новый deviceID (юзер мог сменить устройство)
+        await userRef.update({ deviceID: deviceID });
+      }
+
+      // ✅ ПРОВЕРЯЕМ LIFETIME ЛИМИТ
+      if ((userData.lifetimeRequests || 0) >= lifetimeLimit && userData.subscriptionTier === 'free') {
+        console.error('❌ Lifetime limit exceeded');
         throw new HttpsError(
           'resource-exhausted',
-          `DAILY_LIMIT_REACHED:${dailyLimit}:${userData.subscriptionTier}`,
+          `LIFETIME_LIMIT_REACHED:${lifetimeLimit}:${userData.subscriptionTier}`,
           {
-            limit: dailyLimit,
+            limit: lifetimeLimit,
             tier: userData.subscriptionTier,
-            message: `DAILY_LIMIT_REACHED:${dailyLimit}:${userData.subscriptionTier}`
+            message: `LIFETIME_LIMIT_REACHED:${lifetimeLimit}:${userData.subscriptionTier}`
           }
         );
       }
@@ -345,7 +351,6 @@ exports.callWhisperProxy = onCall(
       });
       form.append('model', 'whisper-1');
       
-      // ✅ ДОБАВЛЯЕМ ЯЗЫК
       if (language && language !== 'auto') {
         form.append('language', language);
         console.log('🌍 Language specified:', language);
@@ -379,7 +384,6 @@ exports.callWhisperProxy = onCall(
 
       const result = response.data;
       
-      // ✅ РАСЧЁТ ДЛИТЕЛЬНОСТИ И СТОИМОСТИ
       const estimatedDurationMinutes = audioSizeMB / 2;
       const estimatedCost = estimatedDurationMinutes * 0.006;
       
@@ -390,16 +394,16 @@ exports.callWhisperProxy = onCall(
         estimatedCost: `$${estimatedCost.toFixed(6)}`,
       });
 
-      // Update usage
+      // ✅ UPDATE LIFETIME REQUESTS
       console.log('💾 Updating usage stats...');
       await userRef.update({
-        dailyRequests: admin.firestore.FieldValue.increment(1),
+        lifetimeRequests: admin.firestore.FieldValue.increment(1),  // ← LIFETIME
         lastRequestAt: admin.firestore.FieldValue.serverTimestamp(),
       });
 
-      // ✅ РАСШИРЕННОЕ ЛОГИРОВАНИЕ
       await db.collection('usage_logs').add({
         userId: userId,
+        deviceID: deviceID,
         timestamp: admin.firestore.FieldValue.serverTimestamp(),
         service: 'whisper',
         audioSize: audioBuffer.length,
@@ -417,15 +421,13 @@ exports.callWhisperProxy = onCall(
 
       return {
         text: result.text,
-        remainingRequests: dailyLimit - (userData.dailyRequests + 1),
+        remainingRequests: lifetimeLimit - ((userData.lifetimeRequests || 0) + 1),
       };
     } catch (error) {
-      // ✅ Если это уже HttpsError - пробросить как есть
       if (error instanceof HttpsError) {
         throw error;
       }
       
-      // Axios errors
       if (error.response) {
         console.error('💥 WHISPER API ERROR:', {
           status: error.response.status,
@@ -450,7 +452,7 @@ exports.callWhisperProxy = onCall(
 );
 
 // ═══════════════════════════════════════════════════════
-// ФУНКЦИЯ 3: Get User Usage
+// ФУНКЦИЯ 3: Get User Usage (LIFETIME)
 // ═══════════════════════════════════════════════════════
 
 exports.getUserUsage = onCall({region: 'us-central1'}, async (request) => {
@@ -459,6 +461,8 @@ exports.getUserUsage = onCall({region: 'us-central1'}, async (request) => {
   }
 
   const userId = request.auth.uid;
+  const deviceID = request.data?.deviceID || 'unknown';
+  
   const db = admin.firestore();
   const userRef = db.collection('users').doc(userId);
   const userDoc = await userRef.get();
@@ -466,72 +470,45 @@ exports.getUserUsage = onCall({region: 'us-central1'}, async (request) => {
 
   if (!userData) {
     await userRef.set({
-      dailyRequests: 0,
+      deviceID: deviceID,
+      lifetimeRequests: 0,
+      lifetimeLimit: 3,
       monthlyTokens: 0,
       subscriptionTier: 'free',
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
-      lastResetAt: admin.firestore.FieldValue.serverTimestamp(),
     });
     
     userData = {
-      dailyRequests: 0,
+      lifetimeRequests: 0,
+      lifetimeLimit: 3,
       monthlyTokens: 0,
       subscriptionTier: 'free',
     };
   }
 
-  // ✅ АВТОСБРОС ЛИМИТА
-  const currentRequests = await checkAndResetDailyLimit(userRef, userData);
-  userData.dailyRequests = currentRequests;
-
-  const dailyLimit = userData.subscriptionTier === 'pro' ? 1000 : 5;
+  const lifetimeLimit = userData.subscriptionTier === 'pro' ? 999999 : (userData.lifetimeLimit || 3);
   const monthlyLimit = userData.subscriptionTier === 'pro' ? 10000000 : 100000;
+  
+  const lifetimeRequests = userData.lifetimeRequests || 0;
+  const remaining = Math.max(0, lifetimeLimit - lifetimeRequests);
 
   return {
-    dailyRequests: userData.dailyRequests || 0,
+    // ✅ NEW FIELDS (lifetime):
+    lifetimeRequests: lifetimeRequests,
+    lifetimeLimit: lifetimeLimit,
+    remainingLifetime: remaining,
+    
+    // ✅ OLD FIELDS (daily) - backwards compatibility aliases:
+    dailyRequests: lifetimeRequests,
+    dailyLimit: lifetimeLimit,
+    remainingDaily: remaining,
+    
+    // Other fields:
     monthlyTokens: userData.monthlyTokens || 0,
-    subscriptionTier: userData.subscriptionTier || 'free',
-    dailyLimit: dailyLimit,
     monthlyLimit: monthlyLimit,
-    remainingDaily: Math.max(0, dailyLimit - (userData.dailyRequests || 0)),
     remainingMonthly: Math.max(0, monthlyLimit - (userData.monthlyTokens || 0)),
+    subscriptionTier: userData.subscriptionTier || 'free',
     lastRequestAt: userData.lastRequestAt,
-    lastResetAt: userData.lastResetAt,
+    deviceID: userData.deviceID,
   };
 });
-
-// ═══════════════════════════════════════════════════════
-// ФУНКЦИЯ 4: Reset Daily Limits (SCHEDULED)
-// ═══════════════════════════════════════════════════════
-
-exports.resetDailyLimits = onSchedule(
-  {
-    schedule: '0 0 * * *',
-    timeZone: 'UTC',
-    region: 'us-central1',
-  },
-  async (event) => {
-    console.log('🌙 === DAILY LIMITS RESET SCHEDULED ===');
-    
-    const db = admin.firestore();
-    const usersSnapshot = await db.collection('users')
-      .where('subscriptionTier', '==', 'free')
-      .get();
-    
-    let resetCount = 0;
-    const batch = db.batch();
-    
-    usersSnapshot.docs.forEach(doc => {
-      batch.update(doc.ref, {
-        dailyRequests: 0,
-        lastResetAt: admin.firestore.FieldValue.serverTimestamp(),
-      });
-      resetCount++;
-    });
-    
-    await batch.commit();
-    
-    console.log(`✅ Reset daily limits for ${resetCount} users`);
-    return {resetCount};
-  }
-);
