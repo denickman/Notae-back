@@ -4,6 +4,9 @@ const admin = require('firebase-admin');
 const {defineSecret} = require('firebase-functions/params');
 const axios = require('axios');
 const FormData = require('form-data');
+const jwt = require('jsonwebtoken');
+const jose = require('node-jose');
+const fetch = require('node-fetch');
 
 // Initialize Firebase Admin
 admin.initializeApp();
@@ -520,3 +523,185 @@ exports.getUserUsage = onCall({region: 'us-central1'}, async (request) => {
     deviceID: userData.deviceID,
   };
 });
+
+// ═══════════════════════════════════════════════════════
+// ФУНКЦИЯ 4: Verify Subscription (Transaction Validation)
+// ═══════════════════════════════════════════════════════
+
+exports.verifySubscription = onCall(
+  {
+    region: 'us-central1',
+    timeoutSeconds: 30,
+  },
+  async (request) => {
+    console.log('💳 === VERIFY SUBSCRIPTION CALLED ===');
+
+    if (!request.auth) {
+      throw new HttpsError('unauthenticated', 'User must be authenticated');
+    }
+
+    const userId = request.auth.uid;
+    const jwsToken = request.data.jwsToken;
+
+    if (!jwsToken) {
+      throw new HttpsError('invalid-argument', 'jwsToken is required');
+    }
+
+    console.log('✅ User:', userId);
+    console.log('📝 JWS Token length:', jwsToken.length);
+
+    try {
+      // 1️⃣ Decode JWS header
+      const decodedToken = jwt.decode(jwsToken, { complete: true });
+
+      if (!decodedToken || !decodedToken.header) {
+        throw new HttpsError('invalid-argument', 'Invalid JWS token');
+      }
+
+      const keyId = decodedToken.header.kid;
+      console.log('🔍 Decoded header:', decodedToken.header);
+
+      // 2️⃣ SELECT PUBLIC KEY (Xcode vs Apple)
+      let publicKey;
+
+      if (keyId === 'Apple_Xcode_Key') {
+        console.log('🧪 StoreKit Testing detected (Xcode)');
+
+        const x5c = decodedToken.header.x5c?.[0];
+        if (!x5c) {
+          throw new Error('Missing x5c certificate in StoreKit token');
+        }
+
+        publicKey = await jose.JWK.asKey({
+          kty: 'EC',
+          crv: 'P-256',
+          x5c: [x5c],
+        });
+
+      } else {
+        console.log('🍏 Production / Sandbox Apple key detected');
+
+        const applePublicKeys = await getApplePublicKeys();
+        const matchingKey = applePublicKeys.find(k => k.kid === keyId);
+
+        if (!matchingKey) {
+          throw new Error(`No matching Apple public key found for kid: ${keyId}`);
+        }
+
+        publicKey = await jose.JWK.asKey(matchingKey);
+      }
+
+      console.log('🔑 Public key resolved');
+
+      // 3️⃣ Verify signature
+      const verifyResult = await jose.JWS
+        .createVerify(publicKey)
+        .verify(jwsToken);
+
+      const payload = JSON.parse(verifyResult.payload.toString());
+
+      console.log('✅ Signature verified');
+      console.log('📊 Transaction data:', {
+        productId: payload.productId,
+        purchaseDate: payload.purchaseDate,
+        expiresDate: payload.expiresDate,
+        transactionId: payload.transactionId,
+      });
+
+      // 4️⃣ Check subscription validity
+      const expiresDate = new Date(payload.expiresDate);
+      const now = new Date();
+      const isActive = expiresDate > now;
+
+      console.log('📅 Expiration check:', {
+        expiresDate: expiresDate.toISOString(),
+        now: now.toISOString(),
+        isActive,
+      });
+
+      // 5️⃣ Update Firestore
+      const db = admin.firestore();
+      const userRef = db.collection('users').doc(userId);
+
+      const updateData = {
+        subscriptionTier: isActive ? 'pro' : 'free',
+        subscriptionExpiresAt: admin.firestore.Timestamp.fromDate(expiresDate),
+        subscriptionProductId: payload.productId,
+        subscriptionTransactionId: payload.transactionId,
+        subscriptionVerifiedAt: admin.firestore.FieldValue.serverTimestamp(),
+      };
+
+      await userRef.update(updateData);
+
+      console.log('✅ Firestore updated');
+
+      return {
+        success: true,
+        subscriptionTier: updateData.subscriptionTier,
+        expiresAt: expiresDate.toISOString(),
+        isActive,
+      };
+
+    } catch (error) {
+      console.error('💥 VERIFY SUBSCRIPTION ERROR:', {
+        name: error.name,
+        message: error.message,
+        stack: error.stack,
+      });
+
+      if (error instanceof HttpsError) {
+        throw error;
+      }
+
+      throw new HttpsError('internal', `Verification failed: ${error.message}`);
+    }
+  }
+);
+
+
+// ═══════════════════════════════════════════════════════
+// HELPER: Get Apple Public Keys
+// ═══════════════════════════════════════════════════════
+
+// ═══════════════════════════════════════════════════════
+// HELPER: Get Apple Public Keys (UPDATED - supports Sandbox)
+// ═══════════════════════════════════════════════════════
+
+async function getApplePublicKeys() {
+  const urls = [
+    // Production App Store
+    'https://api.storekit.itunes.apple.com/in-app-purchase/v1/jwsPublicKeys',
+    // Sandbox App Store
+    'https://api.storekit-sandbox.itunes.apple.com/in-app-purchase/v1/jwsPublicKeys'
+  ];
+
+  const allKeys = [];
+
+  for (const url of urls) {
+    try {
+      console.log(`🔑 Fetching App Store public keys from: ${url}`);
+      const response = await fetch(url);
+
+      if (!response.ok) {
+        console.warn(`⚠️ Failed to fetch ${url}: ${response.status}`);
+        continue;
+      }
+
+      const data = await response.json();
+
+      // ⚠️ keys лежат в data.keys
+      allKeys.push(...data.keys);
+
+      console.log(`✅ Fetched ${data.keys.length} keys from ${url}`);
+    } catch (err) {
+      console.warn(`⚠️ Error fetching ${url}:`, err.message);
+    }
+  }
+
+  if (allKeys.length === 0) {
+    throw new Error('Failed to fetch App Store public keys');
+  }
+
+  console.log(`🔑 Total App Store keys fetched: ${allKeys.length}`);
+  return allKeys;
+}
