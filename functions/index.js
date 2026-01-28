@@ -1,12 +1,12 @@
-const {onCall, HttpsError} = require('firebase-functions/v2/https');
-const {onSchedule} = require('firebase-functions/v2/scheduler');
+const { onCall, HttpsError } = require('firebase-functions/v2/https');
+const { onSchedule } = require('firebase-functions/v2/scheduler');
 const admin = require('firebase-admin');
-const {defineSecret} = require('firebase-functions/params');
+const { defineSecret } = require('firebase-functions/params');
 const axios = require('axios');
 const FormData = require('form-data');
 const jwt = require('jsonwebtoken');
-const jose = require('node-jose');
 const fetch = require('node-fetch');
+const { importX509, importJWK, jwtVerify } = require('jose');
 
 // Initialize Firebase Admin
 admin.initializeApp();
@@ -14,6 +14,9 @@ admin.initializeApp();
 // Define secrets
 const anthropicApiKey = defineSecret('ANTHROPIC_API_KEY');
 const openaiApiKey = defineSecret('OPENAI_API_KEY');
+const appleIssuerId = defineSecret('APPLE_ISSUER_ID');
+const appleKeyId = defineSecret('APPLE_KEY_ID');
+const applePrivateKey = defineSecret('APPLE_PRIVATE_KEY');
 
 // ═══════════════════════════════════════════════════════
 // ФУНКЦИЯ 1: Claude Proxy (LIFETIME LIMITS)
@@ -530,6 +533,7 @@ exports.getUserUsage = onCall({region: 'us-central1'}, async (request) => {
 
 exports.verifySubscription = onCall(
   {
+    secrets: [appleIssuerId, appleKeyId, applePrivateKey],
     region: 'us-central1',
     timeoutSeconds: 30,
   },
@@ -548,139 +552,127 @@ exports.verifySubscription = onCall(
     }
 
     console.log('✅ User:', userId);
-    console.log('📝 JWS Token length:', jwsToken.length);
+    console.log('📝 JWS length:', jwsToken.length);
 
     try {
-      // 1️⃣ Decode JWS header
-      const decodedToken = jwt.decode(jwsToken, { complete: true });
+      const decoded = jwt.decode(jwsToken, { complete: true });
 
-      if (!decodedToken || !decodedToken.header) {
-        throw new HttpsError('invalid-argument', 'Invalid JWS token');
+      if (!decoded?.header) {
+        throw new Error('Invalid JWS token');
       }
 
-      const keyId = decodedToken.header.kid;
-      console.log('🔍 Decoded header:', decodedToken.header);
+      const { kid, x5c } = decoded.header;
+      console.log('🔍 Header:', decoded.header);
 
-      // 2️⃣ SELECT PUBLIC KEY (Xcode vs Apple)
       let publicKey;
 
-      if (keyId === 'Apple_Xcode_Key') {
-        console.log('🧪 StoreKit Testing detected (Xcode)');
+      // 🧪 XCODE STOREKIT TESTING
+      if (kid === 'Apple_Xcode_Key') {
+        console.log('🧪 StoreKit Xcode detected');
 
-        const x5c = decodedToken.header.x5c?.[0];
-        if (!x5c) {
-          throw new Error('Missing x5c certificate in StoreKit token');
+        if (!x5c?.[0]) {
+          throw new Error('Missing x5c certificate');
         }
 
-        publicKey = await jose.JWK.asKey({
-          kty: 'EC',
-          crv: 'P-256',
-          x5c: [x5c],
-        });
+        const cert = `-----BEGIN CERTIFICATE-----\n${x5c[0]}\n-----END CERTIFICATE-----`;
+        publicKey = await importX509(cert, 'ES256');
+      }
+      // 🍏 APP STORE / SANDBOX
+      else {
+        console.log('🍏 App Store transaction detected');
 
-      } else {
-        console.log('🍏 Production / Sandbox Apple key detected');
-
-        const applePublicKeys = await getApplePublicKeys();
-        const matchingKey = applePublicKeys.find(k => k.kid === keyId);
+        const appleKeys = await getApplePublicKeys();
+        const matchingKey = appleKeys.find(k => k.kid === kid);
 
         if (!matchingKey) {
-          throw new Error(`No matching Apple public key found for kid: ${keyId}`);
+          throw new Error(`No matching Apple public key found: ${kid}`);
         }
 
-        publicKey = await jose.JWK.asKey(matchingKey);
+        publicKey = await importJWK(matchingKey, 'ES256');
       }
 
-      console.log('🔑 Public key resolved');
-
-      // 3️⃣ Verify signature
-      const verifyResult = await jose.JWS
-        .createVerify(publicKey)
-        .verify(jwsToken);
-
-      const payload = JSON.parse(verifyResult.payload.toString());
+      const { payload } = await jwtVerify(jwsToken, publicKey, {
+        algorithms: ['ES256'],
+      });
 
       console.log('✅ Signature verified');
-      console.log('📊 Transaction data:', {
-        productId: payload.productId,
-        purchaseDate: payload.purchaseDate,
-        expiresDate: payload.expiresDate,
-        transactionId: payload.transactionId,
-      });
 
-      // 4️⃣ Check subscription validity
       const expiresDate = new Date(payload.expiresDate);
-      const now = new Date();
-      const isActive = expiresDate > now;
+      const isActive = expiresDate > new Date();
 
-      console.log('📅 Expiration check:', {
-        expiresDate: expiresDate.toISOString(),
-        now: now.toISOString(),
-        isActive,
-      });
-
-      // 5️⃣ Update Firestore
       const db = admin.firestore();
-      const userRef = db.collection('users').doc(userId);
-
-      const updateData = {
+      await db.collection('users').doc(userId).update({
         subscriptionTier: isActive ? 'pro' : 'free',
         subscriptionExpiresAt: admin.firestore.Timestamp.fromDate(expiresDate),
         subscriptionProductId: payload.productId,
         subscriptionTransactionId: payload.transactionId,
         subscriptionVerifiedAt: admin.firestore.FieldValue.serverTimestamp(),
-      };
-
-      await userRef.update(updateData);
-
-      console.log('✅ Firestore updated');
+      });
 
       return {
         success: true,
-        subscriptionTier: updateData.subscriptionTier,
-        expiresAt: expiresDate.toISOString(),
         isActive,
+        expiresAt: expiresDate.toISOString(),
+        subscriptionTier: isActive ? 'pro' : 'free',
       };
-
-    } catch (error) {
-      console.error('💥 VERIFY SUBSCRIPTION ERROR:', {
-        name: error.name,
-        message: error.message,
-        stack: error.stack,
-      });
-
-      if (error instanceof HttpsError) {
-        throw error;
-      }
-
-      throw new HttpsError('internal', `Verification failed: ${error.message}`);
+    } catch (err) {
+      console.error('💥 VERIFY ERROR:', err.message, err.stack);
+      throw new HttpsError('internal', err.message);
     }
   }
 );
 
+// ═══════════════════════════════════════════════════════
+// HELPER: Generate Apple Server JWT
+// ═══════════════════════════════════════════════════════
+function generateAppleServerJWT() {
+  const issuer = appleIssuerId.value();
+  const keyId = appleKeyId.value();
+  const privateKey = applePrivateKey.value();
+
+  if (!issuer || !keyId || !privateKey) {
+    throw new Error('Missing Apple secrets');
+  }
+
+  const now = Math.floor(Date.now() / 1000);
+
+  const payload = {
+    iss: issuer,
+    iat: now,
+    exp: now + 300,  // 5 минут
+    aud: 'appstoreconnect-v1'
+  };
+
+  return jwt.sign(payload, privateKey, {
+    algorithm: 'ES256',
+    header: {
+      alg: 'ES256',
+      kid: keyId,
+      typ: 'JWT'
+    }
+  });
+}
 
 // ═══════════════════════════════════════════════════════
-// HELPER: Get Apple Public Keys
+// HELPER: Get Apple Public Keys (UPDATED - with auth)
 // ═══════════════════════════════════════════════════════
-
-// ═══════════════════════════════════════════════════════
-// HELPER: Get Apple Public Keys (UPDATED - supports Sandbox)
-// ═══════════════════════════════════════════════════════
-
 async function getApplePublicKeys() {
   const urls = [
-    // Production App Store
     'https://api.storekit.itunes.apple.com/in-app-purchase/v1/jwsPublicKeys',
-    // Sandbox App Store
     'https://api.storekit-sandbox.itunes.apple.com/in-app-purchase/v1/jwsPublicKeys'
   ];
 
+  const token = generateAppleServerJWT();
   const allKeys = [];
 
   for (const url of urls) {
     try {
       console.log(`🔑 Fetching App Store public keys from: ${url}`);
-      const response = await fetch(url);
+      const response = await fetch(url, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
 
       if (!response.ok) {
         console.warn(`⚠️ Failed to fetch ${url}: ${response.status}`);
@@ -688,8 +680,6 @@ async function getApplePublicKeys() {
       }
 
       const data = await response.json();
-
-      // ⚠️ keys лежат в data.keys
       allKeys.push(...data.keys);
 
       console.log(`✅ Fetched ${data.keys.length} keys from ${url}`);
