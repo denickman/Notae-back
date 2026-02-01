@@ -19,7 +19,7 @@ const appleKeyId = defineSecret('APPLE_KEY_ID');
 const applePrivateKey = defineSecret('APPLE_PRIVATE_KEY');
 
 // ═══════════════════════════════════════════════════════
-// ФУНКЦИЯ 1: Claude Proxy (LIFETIME LIMITS)
+// ФУНКЦИЯ 1: Claude Proxy (✅ MODIFIED - decrement only if tools used)
 // ═══════════════════════════════════════════════════════
 
 exports.callClaudeProxy = onCall(
@@ -50,7 +50,6 @@ exports.callClaudeProxy = onCall(
     });
 
     try {
-      // ✅ ПОЛУЧАЕМ DEVICE ID ИЗ ЗАПРОСА
       const deviceID = request.data.deviceID || 'unknown';
       console.log('📱 Device ID:', deviceID.substring(0, 8) + '...');
       
@@ -63,9 +62,10 @@ exports.callClaudeProxy = onCall(
       if (!userDoc.exists) {
         console.log('📝 Creating new user document');
         await userRef.set({
-          deviceID: deviceID,                // ← СОХРАНЯЕМ DEVICE ID
-          lifetimeRequests: 0,               // ← LIFETIME вместо daily
-          lifetimeLimit: 3,                  // ← ЛИМИТ НАВСЕГДА
+          deviceID: deviceID,
+          voiceActionsUsed: 0,
+          voiceActionsLimit: 3,
+          lifetimeAPIRequests: 0,
           monthlyTokens: 0,
           subscriptionTier: 'free',
           createdAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -73,43 +73,42 @@ exports.callClaudeProxy = onCall(
       }
 
       let userData = userDoc.data() || {
-        lifetimeRequests: 0,
-        lifetimeLimit: 3,
+        voiceActionsUsed: 0,
+        voiceActionsLimit: 3,
         subscriptionTier: 'free',
         monthlyTokens: 0
       };
       
-      const lifetimeLimit = userData.subscriptionTier === 'pro' ? 999999 : (userData.lifetimeLimit || 3);
+      const voiceActionsLimit = userData.subscriptionTier === 'pro' ? 999999 : (userData.voiceActionsLimit || 3);
+      const voiceActionsUsed = userData.voiceActionsUsed || 0;
 
       console.log('📊 User data:', {
         subscriptionTier: userData.subscriptionTier,
-        lifetimeRequests: userData.lifetimeRequests || 0,
-        lifetimeLimit,
-        remainingRequests: lifetimeLimit - (userData.lifetimeRequests || 0),
+        voiceActionsUsed,
+        voiceActionsLimit,
+        remainingRequests: voiceActionsLimit - voiceActionsUsed,
         deviceID: deviceID.substring(0, 8) + '...',
       });
 
-      // ✅ ПРОВЕРЯЕМ DEVICE ID (защита от лайфхака)
+      // Check device ID
       if (userData.deviceID && userData.deviceID !== deviceID) {
         console.warn('⚠️ Device ID mismatch - updating to new device', {
           stored: userData.deviceID.substring(0, 8),
           received: deviceID.substring(0, 8),
           userId: userId
         });
-        // Обновляем на новый deviceID (юзер мог сменить устройство)
         await userRef.update({ deviceID: deviceID });
       }
 
-      // ✅ ПРОВЕРЯЕМ LIFETIME ЛИМИТ
-      if ((userData.lifetimeRequests || 0) >= lifetimeLimit && userData.subscriptionTier === 'free') {
-        console.error('❌ Lifetime limit exceeded');
+      // ✅ CHECK LIMIT BEFORE CALLING API
+      if (voiceActionsUsed >= voiceActionsLimit && userData.subscriptionTier === 'free') {
+        console.error('❌ Voice actions limit exceeded');
         throw new HttpsError(
           'resource-exhausted',
-          `LIFETIME_LIMIT_REACHED:${lifetimeLimit}:${userData.subscriptionTier}`,
+          `VOICE_ACTIONS_LIMIT_REACHED:${voiceActionsLimit}:${userData.subscriptionTier}`,
           {
-            limit: lifetimeLimit,
+            limit: voiceActionsLimit,
             tier: userData.subscriptionTier,
-            message: `LIFETIME_LIMIT_REACHED:${lifetimeLimit}:${userData.subscriptionTier}`
           }
         );
       }
@@ -174,15 +173,40 @@ exports.callClaudeProxy = onCall(
         estimatedCost: `$${estimatedCost.toFixed(6)}`,
       });
 
-      // ✅ UPDATE LIFETIME REQUESTS (statistics only)
-      console.log('💾 Updating usage stats...');
-      await userRef.update({
-        lifetimeAPIRequests: admin.firestore.FieldValue.increment(1),
-        monthlyTokens: admin.firestore.FieldValue.increment(
-          result.usage.input_tokens + result.usage.output_tokens
-        ),
-        lastRequestAt: admin.firestore.FieldValue.serverTimestamp(),
+      // ═══════════════════════════════════════════════════════
+      // ✅ NEW LOGIC: Decrement ONLY if tools were used
+      // ═══════════════════════════════════════════════════════
+      
+      const toolsUsed = result.content.some(block => block.type === 'tool_use');
+      
+      console.log('📊 Response analysis:', {
+        stopReason: result.stop_reason,
+        toolsUsed: toolsUsed,
+        blocksCount: result.content.length,
       });
+
+      if (toolsUsed) {
+        console.log('💾 Updating usage (tools were used)...');
+        await userRef.update({
+          voiceActionsUsed: admin.firestore.FieldValue.increment(1), // ← ✅ DECREMENT HERE!
+          lifetimeAPIRequests: admin.firestore.FieldValue.increment(1),
+          monthlyTokens: admin.firestore.FieldValue.increment(
+            result.usage.input_tokens + result.usage.output_tokens
+          ),
+          lastRequestAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+        console.log('✅ Usage decremented');
+      } else {
+        console.log('ℹ️ No tools used - usage NOT decremented');
+        // Статистика API calls всё равно считается
+        await userRef.update({
+          lifetimeAPIRequests: admin.firestore.FieldValue.increment(1),
+          monthlyTokens: admin.firestore.FieldValue.increment(
+            result.usage.input_tokens + result.usage.output_tokens
+          ),
+          lastRequestAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+      }
 
       // Enhanced usage logging
       await db.collection('usage_logs').add({
@@ -196,6 +220,7 @@ exports.callClaudeProxy = onCall(
         totalTokens: result.usage.input_tokens + result.usage.output_tokens,
         cost: estimatedCost,
         hasTools: !!tools,
+        toolsUsed: toolsUsed, // ← ✅ LOG WHETHER TOOLS USED
         stopReason: result.stop_reason,
         durationMs: apiDuration,
         subscriptionTier: userData.subscriptionTier,
@@ -204,13 +229,15 @@ exports.callClaudeProxy = onCall(
       console.log('✅ Usage stats updated');
       console.log('🎉 Claude proxy completed successfully');
 
-      const voiceActionsLimit = userData.subscriptionTier === 'pro' ? 999999 : (userData.voiceActionsLimit || 3);
-      const voiceActionsUsed = userData.voiceActionsUsed || 0;
+      // ✅ RETURN UPDATED REMAINING COUNT
+      const updatedVoiceActionsUsed = toolsUsed ? voiceActionsUsed + 1 : voiceActionsUsed;
+      const remainingRequests = voiceActionsLimit - updatedVoiceActionsUsed;
+
       return {
         content: result.content,
         stopReason: result.stop_reason,
         usage: result.usage,
-        remainingRequests: voiceActionsLimit - voiceActionsUsed,
+        remainingRequests: Math.max(0, remainingRequests), // ← ✅ UPDATED!
       };
     } catch (error) {
       console.error('💥 CLAUDE PROXY ERROR:', {
@@ -229,7 +256,7 @@ exports.callClaudeProxy = onCall(
 );
 
 // ═══════════════════════════════════════════════════════
-// ФУНКЦИЯ 2: Whisper Proxy (LIFETIME LIMITS)
+// ФУНКЦИЯ 2: Whisper Proxy (✅ MODIFIED - NO decrement!)
 // ═══════════════════════════════════════════════════════
 
 exports.callWhisperProxy = onCall(
@@ -268,7 +295,6 @@ exports.callWhisperProxy = onCall(
       language: language,
     });
 
-    // ✅ ПРОВЕРКА РАЗМЕРА
     if (audioSizeMB > 25) {
       console.error('❌ Audio file too large:', audioSizeMB, 'MB');
       throw new HttpsError(
@@ -278,11 +304,10 @@ exports.callWhisperProxy = onCall(
     }
 
     try {
-      // ✅ ПОЛУЧАЕМ DEVICE ID ИЗ ЗАПРОСА
       const deviceID = request.data.deviceID || 'unknown';
       console.log('📱 Device ID:', deviceID.substring(0, 8) + '...');
       
-      // Rate limiting with Firestore
+      // Rate limiting with Firestore (for display only)
       console.log('🔍 Checking rate limits...');
       const db = admin.firestore();
       const userRef = db.collection('users').doc(userId);
@@ -318,29 +343,14 @@ exports.callWhisperProxy = onCall(
         deviceID: deviceID.substring(0, 8) + '...',
       });
 
-      // ✅ ПРОВЕРЯЕМ DEVICE ID (защита от лайфхака)
+      // Check device ID
       if (userData.deviceID && userData.deviceID !== deviceID) {
         console.warn('⚠️ Device ID mismatch - updating to new device', {
           stored: userData.deviceID.substring(0, 8),
           received: deviceID.substring(0, 8),
           userId: userId
         });
-        // Обновляем на новый deviceID (юзер мог сменить устройство)
         await userRef.update({ deviceID: deviceID });
-      }
-
-      // ✅ ПРОВЕРЯЕМ ЛИМИТ НА VOICE ACTIONS
-      if (voiceActionsUsed >= voiceActionsLimit && userData.subscriptionTier === 'free') {
-        console.error('❌ Voice actions limit exceeded');
-        throw new HttpsError(
-          'resource-exhausted',
-          `VOICE_ACTIONS_LIMIT_REACHED:${voiceActionsLimit}:${userData.subscriptionTier}`,
-          {
-            limit: voiceActionsLimit,
-            tier: userData.subscriptionTier,
-            message: `VOICE_ACTIONS_LIMIT_REACHED:${voiceActionsLimit}:${userData.subscriptionTier}`
-          }
-        );
       }
 
       // Call Whisper API
@@ -405,14 +415,15 @@ exports.callWhisperProxy = onCall(
         estimatedCost: `$${estimatedCost.toFixed(6)}`,
       });
 
-      // ✅ UPDATE LIFETIME REQUESTS
-      console.log('💾 Updating usage stats...');
-      await userRef.update({
-        voiceActionsUsed: admin.firestore.FieldValue.increment(1),
-        lifetimeAPIRequests: admin.firestore.FieldValue.increment(1),
-        lastRequestAt: admin.firestore.FieldValue.serverTimestamp(),
-      });
+      // ═══════════════════════════════════════════════════════
+      // ✅ NO USAGE DECREMENT HERE!
+      // Whisper is just a transcription service
+      // Usage decrements only when Claude creates something
+      // ═══════════════════════════════════════════════════════
 
+      console.log('💾 Logging Whisper stats (no usage decrement)...');
+
+      // Logging (для статистики API calls)
       await db.collection('usage_logs').add({
         userId: userId,
         deviceID: deviceID,
@@ -428,12 +439,13 @@ exports.callWhisperProxy = onCall(
         subscriptionTier: userData.subscriptionTier,
       });
 
-      console.log('✅ Usage stats updated');
-      console.log('🎉 Whisper proxy completed successfully');
+      console.log('✅ Whisper stats logged');
+      console.log('🎉 Whisper proxy completed (usage not decremented)');
 
+      // ✅ Return current usage (not changed)
       return {
         text: result.text,
-        remainingRequests: voiceActionsLimit - (voiceActionsUsed + 1),
+        remainingRequests: Math.max(0, voiceActionsLimit - voiceActionsUsed), // ← ✅ Current state
       };
     } catch (error) {
       if (error instanceof HttpsError) {
@@ -464,7 +476,7 @@ exports.callWhisperProxy = onCall(
 );
 
 // ═══════════════════════════════════════════════════════
-// ФУНКЦИЯ 3: Get User Usage (LIFETIME)
+// ФУНКЦИЯ 3: Get User Usage (UNCHANGED)
 // ═══════════════════════════════════════════════════════
 
 exports.getUserUsage = onCall({region: 'us-central1'}, async (request) => {
@@ -511,7 +523,7 @@ exports.getUserUsage = onCall({region: 'us-central1'}, async (request) => {
     voiceActionsLimit: voiceActionsLimit,
     remainingVoiceActions: remaining,
     
-    // ✅ OLD FIELDS (daily) - backwards compatibility aliases:
+    // Backwards compatibility aliases:
     dailyRequests: voiceActionsUsed,
     dailyLimit: voiceActionsLimit,
     remainingDaily: remaining,
@@ -528,7 +540,7 @@ exports.getUserUsage = onCall({region: 'us-central1'}, async (request) => {
 });
 
 // ═══════════════════════════════════════════════════════
-// ФУНКЦИЯ 4: Verify Subscription (Transaction Validation)
+// ФУНКЦИЯ 4: Verify Subscription (UNCHANGED)
 // ═══════════════════════════════════════════════════════
 
 exports.verifySubscription = onCall(
@@ -623,8 +635,9 @@ exports.verifySubscription = onCall(
 );
 
 // ═══════════════════════════════════════════════════════
-// HELPER: Generate Apple Server JWT
+// HELPER FUNCTIONS (UNCHANGED)
 // ═══════════════════════════════════════════════════════
+
 function generateAppleServerJWT() {
   const issuer = appleIssuerId.value();
   const keyId = appleKeyId.value();
@@ -639,7 +652,7 @@ function generateAppleServerJWT() {
   const payload = {
     iss: issuer,
     iat: now,
-    exp: now + 300,  // 5 минут
+    exp: now + 300,
     aud: 'appstoreconnect-v1'
   };
 
@@ -653,9 +666,6 @@ function generateAppleServerJWT() {
   });
 }
 
-// ═══════════════════════════════════════════════════════
-// HELPER: Get Apple Public Keys (UPDATED - with auth)
-// ═══════════════════════════════════════════════════════
 async function getApplePublicKeys() {
   const urls = [
     'https://api.storekit.itunes.apple.com/in-app-purchase/v1/jwsPublicKeys',
