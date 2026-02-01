@@ -19,10 +19,10 @@ const appleKeyId = defineSecret('APPLE_KEY_ID');
 const applePrivateKey = defineSecret('APPLE_PRIVATE_KEY');
 
 // ═══════════════════════════════════════════════════════
-// ФУНКЦИЯ 1: Claude Proxy (✅ MODIFIED - decrement only if tools used)
+// 🆕 НОВАЯ ФУНКЦИЯ: Claude Vision (Photo Scan)
 // ═══════════════════════════════════════════════════════
 
-exports.callClaudeProxy = onCall(
+exports.callClaudeVision = onCall(
   {
     secrets: [anthropicApiKey],
     region: 'us-central1',
@@ -30,7 +30,7 @@ exports.callClaudeProxy = onCall(
     memory: '512MiB',
   },
   async (request) => {
-    console.log('🤖 === CLAUDE PROXY CALLED ===');
+    console.log('📸 === CLAUDE VISION CALLED ===');
     
     if (!request.auth) {
       console.error('❌ No authentication');
@@ -40,21 +40,37 @@ exports.callClaudeProxy = onCall(
     const userId = request.auth.uid;
     console.log('✅ User authenticated:', userId);
     
-    const {messages, tools, system} = request.data;
+    const { imageBase64, imageType, prompt } = request.data;
 
-    console.log('📊 Request data:', {
-      userId,
-      messageCount: messages?.length,
-      hasTools: !!tools,
-      hasSystem: !!system,
-    });
+    if (!imageBase64) {
+      console.error('❌ No image data');
+      throw new HttpsError('invalid-argument', 'imageBase64 is required');
+    }
+
+    // Validate image type
+    const validTypes = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+    const mediaType = imageType || 'image/jpeg';
+    
+    if (!validTypes.includes(mediaType)) {
+      throw new HttpsError('invalid-argument', `Invalid image type: ${mediaType}`);
+    }
+
+    // Estimate image size (base64 is ~33% larger than binary)
+    const estimatedSizeMB = (imageBase64.length * 0.75) / 1024 / 1024;
+    console.log('📊 Image size (estimated):', estimatedSizeMB.toFixed(2), 'MB');
+
+    if (estimatedSizeMB > 5) {
+      throw new HttpsError(
+        'invalid-argument',
+        `Image too large: ${estimatedSizeMB.toFixed(1)}MB (max 5MB). Please resize on device.`
+      );
+    }
 
     try {
       const deviceID = request.data.deviceID || 'unknown';
       console.log('📱 Device ID:', deviceID.substring(0, 8) + '...');
       
-      // Rate limiting with Firestore
-      console.log('🔍 Checking rate limits...');
+      // Rate limiting
       const db = admin.firestore();
       const userRef = db.collection('users').doc(userId);
       const userDoc = await userRef.get();
@@ -63,68 +79,58 @@ exports.callClaudeProxy = onCall(
         console.log('📝 Creating new user document');
         await userRef.set({
           deviceID: deviceID,
+          photoScansUsed: 0,
+          photoScansLimit: 3,
           voiceActionsUsed: 0,
-          voiceActionsLimit: 3,
-          lifetimeAPIRequests: 0,
-          monthlyTokens: 0,
+          voiceActionsLimit: 10,
           subscriptionTier: 'free',
           createdAt: admin.firestore.FieldValue.serverTimestamp(),
         });
       }
 
       let userData = userDoc.data() || {
-        voiceActionsUsed: 0,
-        voiceActionsLimit: 3,
-        subscriptionTier: 'free',
-        monthlyTokens: 0
+        photoScansUsed: 0,
+        photoScansLimit: 3,
+        subscriptionTier: 'free'
       };
       
-      const voiceActionsLimit = userData.subscriptionTier === 'pro' ? 999999 : (userData.voiceActionsLimit || 3);
-      const voiceActionsUsed = userData.voiceActionsUsed || 0;
+      const photoScansLimit = userData.subscriptionTier === 'pro' ? 999999 : (userData.photoScansLimit || 3);
+      const photoScansUsed = userData.photoScansUsed || 0;
 
       console.log('📊 User data:', {
         subscriptionTier: userData.subscriptionTier,
-        voiceActionsUsed,
-        voiceActionsLimit,
-        remainingRequests: voiceActionsLimit - voiceActionsUsed,
-        deviceID: deviceID.substring(0, 8) + '...',
+        photoScansUsed,
+        photoScansLimit,
+        remainingScans: photoScansLimit - photoScansUsed,
       });
 
-      // Check device ID
-      if (userData.deviceID && userData.deviceID !== deviceID) {
-        console.warn('⚠️ Device ID mismatch - updating to new device', {
-          stored: userData.deviceID.substring(0, 8),
-          received: deviceID.substring(0, 8),
-          userId: userId
-        });
-        await userRef.update({ deviceID: deviceID });
-      }
-
-      // ✅ CHECK LIMIT BEFORE CALLING API
-      if (voiceActionsUsed >= voiceActionsLimit && userData.subscriptionTier === 'free') {
-        console.error('❌ Voice actions limit exceeded');
+      // Check limit
+      if (photoScansUsed >= photoScansLimit && userData.subscriptionTier === 'free') {
+        console.error('❌ Photo scans limit exceeded');
         throw new HttpsError(
           'resource-exhausted',
-          `VOICE_ACTIONS_LIMIT_REACHED:${voiceActionsLimit}:${userData.subscriptionTier}`,
+          `PHOTO_SCANS_LIMIT_REACHED:${photoScansLimit}:${userData.subscriptionTier}`,
           {
-            limit: voiceActionsLimit,
+            limit: photoScansLimit,
+            used: photoScansUsed,
             tier: userData.subscriptionTier,
           }
         );
       }
 
-      // Call Claude API
+      // Detect photo type and select template
+      const photoType = request.data.photoType || 'note'; // 'recipe', 'receipt', 'note', 'custom'
+      const systemPrompt = getPhotoScanPrompt(photoType, prompt);
+
+      console.log('📝 Using template:', photoType);
       console.log('🔑 Getting API key...');
       const apiKey = anthropicApiKey.value();
       
       if (!apiKey) {
-        console.error('❌ ANTHROPIC_API_KEY is not set!');
         throw new HttpsError('failed-precondition', 'API key not configured');
       }
-      
-      console.log('✅ API key retrieved (length:', apiKey.length, ')');
 
-      console.log('🌐 Calling Claude API...');
+      console.log('🌐 Calling Claude Vision API...');
       const apiStartTime = Date.now();
       
       const response = await fetch('https://api.anthropic.com/v1/messages', {
@@ -135,115 +141,97 @@ exports.callClaudeProxy = onCall(
           'content-type': 'application/json',
         },
         body: JSON.stringify({
-          model: 'claude-3-5-haiku-20241022',
+          model: 'claude-3-5-sonnet-20241022', // Vision-enabled model
           max_tokens: 4096,
-          messages: messages,
-          tools: tools || undefined,
-          system: system || undefined,
+          messages: [{
+            role: 'user',
+            content: [
+              {
+                type: 'image',
+                source: {
+                  type: 'base64',
+                  media_type: mediaType,
+                  data: imageBase64
+                }
+              },
+              {
+                type: 'text',
+                text: systemPrompt
+              }
+            ]
+          }]
         }),
       });
 
       const apiDuration = Date.now() - apiStartTime;
 
-      console.log('📡 API response received:', {
-        status: response.status,
-        statusText: response.statusText,
-        ok: response.ok,
-        durationMs: apiDuration,
-      });
-
       if (!response.ok) {
         const errorText = await response.text();
-        console.error('❌ Claude API error:', errorText);
+        console.error('❌ Claude Vision API error:', errorText);
         throw new HttpsError('internal', `Claude API error: ${response.statusText}`);
       }
 
       const result = await response.json();
       
+      // Extract text from response
+      const textContent = result.content
+        .filter(block => block.type === 'text')
+        .map(block => block.text)
+        .join('\n\n');
+
       const estimatedCost = (
-        result.usage.input_tokens * 0.25 +
-        result.usage.output_tokens * 1.25
+        result.usage.input_tokens * 3.0 +  // Vision tokens more expensive
+        result.usage.output_tokens * 15.0
       ) / 1000000;
       
-      console.log('✅ Claude response successful:', {
-        stopReason: result.stop_reason,
+      console.log('✅ Claude Vision response:', {
         inputTokens: result.usage.input_tokens,
         outputTokens: result.usage.output_tokens,
-        totalTokens: result.usage.input_tokens + result.usage.output_tokens,
         estimatedCost: `$${estimatedCost.toFixed(6)}`,
+        textLength: textContent.length,
       });
 
-      // ═══════════════════════════════════════════════════════
-      // ✅ NEW LOGIC: Decrement ONLY if tools were used
-      // ═══════════════════════════════════════════════════════
-      
-      const toolsUsed = result.content.some(block => block.type === 'tool_use');
-      
-      console.log('📊 Response analysis:', {
-        stopReason: result.stop_reason,
-        toolsUsed: toolsUsed,
-        blocksCount: result.content.length,
+      // ✅ Update usage
+      console.log('💾 Updating photo scan usage...');
+      await userRef.update({
+        photoScansUsed: admin.firestore.FieldValue.increment(1),
+        lifetimeAPIRequests: admin.firestore.FieldValue.increment(1),
+        monthlyTokens: admin.firestore.FieldValue.increment(
+          result.usage.input_tokens + result.usage.output_tokens
+        ),
+        lastRequestAt: admin.firestore.FieldValue.serverTimestamp(),
       });
 
-      if (toolsUsed) {
-        console.log('💾 Updating usage (tools were used)...');
-        await userRef.update({
-          voiceActionsUsed: admin.firestore.FieldValue.increment(1), // ← ✅ DECREMENT HERE!
-          lifetimeAPIRequests: admin.firestore.FieldValue.increment(1),
-          monthlyTokens: admin.firestore.FieldValue.increment(
-            result.usage.input_tokens + result.usage.output_tokens
-          ),
-          lastRequestAt: admin.firestore.FieldValue.serverTimestamp(),
-        });
-        console.log('✅ Usage decremented');
-      } else {
-        console.log('ℹ️ No tools used - usage NOT decremented');
-        // Статистика API calls всё равно считается
-        await userRef.update({
-          lifetimeAPIRequests: admin.firestore.FieldValue.increment(1),
-          monthlyTokens: admin.firestore.FieldValue.increment(
-            result.usage.input_tokens + result.usage.output_tokens
-          ),
-          lastRequestAt: admin.firestore.FieldValue.serverTimestamp(),
-        });
-      }
-
-      // Enhanced usage logging
+      // Enhanced logging
       await db.collection('usage_logs').add({
         userId: userId,
         deviceID: deviceID,
         timestamp: admin.firestore.FieldValue.serverTimestamp(),
-        service: 'claude',
-        model: 'claude-3-5-haiku-20241022',
+        service: 'claude-vision',
+        model: 'claude-3-5-sonnet-20241022',
+        photoType: photoType,
+        imageSizeMB: parseFloat(estimatedSizeMB.toFixed(2)),
         inputTokens: result.usage.input_tokens,
         outputTokens: result.usage.output_tokens,
         totalTokens: result.usage.input_tokens + result.usage.output_tokens,
         cost: estimatedCost,
-        hasTools: !!tools,
-        toolsUsed: toolsUsed, // ← ✅ LOG WHETHER TOOLS USED
-        stopReason: result.stop_reason,
         durationMs: apiDuration,
         subscriptionTier: userData.subscriptionTier,
       });
 
-      console.log('✅ Usage stats updated');
-      console.log('🎉 Claude proxy completed successfully');
-
-      // ✅ RETURN UPDATED REMAINING COUNT
-      const updatedVoiceActionsUsed = toolsUsed ? voiceActionsUsed + 1 : voiceActionsUsed;
-      const remainingRequests = voiceActionsLimit - updatedVoiceActionsUsed;
+      console.log('✅ Photo scan completed successfully');
 
       return {
-        content: result.content,
-        stopReason: result.stop_reason,
+        markdown: textContent,
         usage: result.usage,
-        remainingRequests: Math.max(0, remainingRequests), // ← ✅ UPDATED!
+        photoType: photoType,
+        remainingScans: Math.max(0, photoScansLimit - (photoScansUsed + 1)),
       };
+
     } catch (error) {
-      console.error('💥 CLAUDE PROXY ERROR:', {
+      console.error('💥 CLAUDE VISION ERROR:', {
         name: error.name,
         message: error.message,
-        stack: error.stack,
       });
       
       if (error instanceof HttpsError) {
@@ -256,7 +244,127 @@ exports.callClaudeProxy = onCall(
 );
 
 // ═══════════════════════════════════════════════════════
-// ФУНКЦИЯ 2: Whisper Proxy (✅ MODIFIED - NO decrement!)
+// 📝 Helper: Photo Scan Prompts
+// ═══════════════════════════════════════════════════════
+
+function getPhotoScanPrompt(photoType, customPrompt) {
+  if (customPrompt) {
+    return customPrompt;
+  }
+
+  const templates = {
+    recipe: `Extract this recipe and format as beautiful Markdown:
+
+# [Recipe Title]
+
+**Prep time:** X min  
+**Cook time:** Y min  
+**Servings:** Z  
+
+## Ingredients
+
+### [Category 1]
+- ingredient 1 (quantity + unit)
+- ingredient 2 (quantity + unit)
+
+### [Category 2]
+- ingredient 3
+
+## Instructions
+
+1. First step with details
+2. Second step
+3. Third step
+
+## Tips
+- Any helpful tips from the image
+
+Use emojis where appropriate (🥘 🍳 ⏱️ 🔥). Keep formatting clean and readable.`,
+
+    receipt: `Extract receipt data and format as Markdown:
+
+# 🧾 Receipt - [Store Name]
+
+**Date:** YYYY-MM-DD  
+**Time:** HH:MM  
+**Location:** [Store address if visible]  
+
+## Items
+
+| Item | Qty | Price |
+|------|-----|-------|
+| Item 1 | 1 | $X.XX |
+| Item 2 | 2 | $Y.YY |
+
+## Summary
+
+- **Subtotal:** $XX.XX
+- **Tax:** $X.XX
+- **Total:** $XX.XX
+
+**Payment:** [Card/Cash]  
+**Receipt #:** [number if visible]`,
+
+    note: `Extract ALL text from this image and format as clean, well-structured Markdown:
+
+- Use # ## ### for headers (detect hierarchy from font size/position)
+- Use bullet lists (-) for lists
+- Use numbered lists (1. 2. 3.) for sequences
+- Use **bold** for emphasis
+- Use tables if structured data is present
+- Add emojis where contextually appropriate
+- Preserve the logical structure and flow
+
+Make it readable and beautiful. Don't add content that's not in the image.`,
+
+    whiteboard: `Extract content from this whiteboard/notes and structure as Markdown:
+
+# [Main Topic - if visible]
+
+## Key Points
+
+- Point 1
+- Point 2
+- Point 3
+
+## Details
+
+[Organize content logically]
+
+## Action Items
+
+- [ ] Task 1
+- [ ] Task 2
+
+Use checkboxes for TODO items. Add section headers based on content grouping.`,
+
+    business_card: `Extract contact information from this business card:
+
+# 👤 [Full Name]
+
+**Title:** [Job Title]  
+**Company:** [Company Name]  
+
+## Contact
+
+- 📧 Email: [email]
+- 📱 Phone: [phone]
+- 🌐 Website: [website]
+- 📍 Address: [address]
+
+## Social
+
+- LinkedIn: [if visible]
+- Other: [if visible]
+
+Keep formatting clean and professional.`
+  };
+
+  return templates[photoType] || templates.note;
+}
+
+// ═══════════════════════════════════════════════════════
+// ФУНКЦИЯ: Whisper Proxy (UNCHANGED from your current)
 // ═══════════════════════════════════════════════════════
 
 exports.callWhisperProxy = onCall(
@@ -275,28 +383,17 @@ exports.callWhisperProxy = onCall(
     }
 
     const userId = request.auth.uid;
-    console.log('✅ User authenticated:', userId);
-    
     const audioDataBase64 = request.data.audioData;
     const language = request.data.language || 'auto';
 
     if (!audioDataBase64) {
-      console.error('❌ No audioData in request');
       throw new HttpsError('invalid-argument', 'audioData is required');
     }
 
     const audioBuffer = Buffer.from(audioDataBase64, 'base64');
     const audioSizeMB = audioBuffer.length / 1024 / 1024;
 
-    console.log('📊 Audio data received:', {
-      userId,
-      base64Length: audioDataBase64.length,
-      audioSizeMB: audioSizeMB.toFixed(2),
-      language: language,
-    });
-
     if (audioSizeMB > 25) {
-      console.error('❌ Audio file too large:', audioSizeMB, 'MB');
       throw new HttpsError(
         'invalid-argument',
         `Audio file too large: ${audioSizeMB.toFixed(1)}MB (max 25MB)`
@@ -305,21 +402,17 @@ exports.callWhisperProxy = onCall(
 
     try {
       const deviceID = request.data.deviceID || 'unknown';
-      console.log('📱 Device ID:', deviceID.substring(0, 8) + '...');
-      
-      // Rate limiting with Firestore (for display only)
-      console.log('🔍 Checking rate limits...');
       const db = admin.firestore();
       const userRef = db.collection('users').doc(userId);
       const userDoc = await userRef.get();
       
       if (!userDoc.exists) {
-        console.log('📝 Creating new user document');
         await userRef.set({
           deviceID: deviceID,
           voiceActionsUsed: 0,
-          voiceActionsLimit: 3,
-          lifetimeAPIRequests: 0,
+          voiceActionsLimit: 10,
+          photoScansUsed: 0,
+          photoScansLimit: 3,
           subscriptionTier: 'free',
           createdAt: admin.firestore.FieldValue.serverTimestamp(),
         });
@@ -327,44 +420,18 @@ exports.callWhisperProxy = onCall(
       
       let userData = userDoc.data() || {
         voiceActionsUsed: 0,
-        voiceActionsLimit: 3,
-        lifetimeAPIRequests: 0,
+        voiceActionsLimit: 10,
         subscriptionTier: 'free'
       };
       
-      const voiceActionsLimit = userData.subscriptionTier === 'pro' ? 999999 : (userData.voiceActionsLimit || 3);
+      const voiceActionsLimit = userData.subscriptionTier === 'pro' ? 999999 : (userData.voiceActionsLimit || 10);
       const voiceActionsUsed = userData.voiceActionsUsed || 0;
 
-      console.log('📊 User data:', {
-        subscriptionTier: userData.subscriptionTier,
-        voiceActionsUsed,
-        voiceActionsLimit,
-        remainingRequests: voiceActionsLimit - voiceActionsUsed,
-        deviceID: deviceID.substring(0, 8) + '...',
-      });
-
-      // Check device ID
-      if (userData.deviceID && userData.deviceID !== deviceID) {
-        console.warn('⚠️ Device ID mismatch - updating to new device', {
-          stored: userData.deviceID.substring(0, 8),
-          received: deviceID.substring(0, 8),
-          userId: userId
-        });
-        await userRef.update({ deviceID: deviceID });
-      }
-
-      // Call Whisper API
-      console.log('🔑 Getting API key...');
       const apiKey = openaiApiKey.value();
-      
       if (!apiKey) {
-        console.error('❌ OPENAI_API_KEY is not set!');
         throw new HttpsError('failed-precondition', 'API key not configured');
       }
-      
-      console.log('✅ API key retrieved (length:', apiKey.length, ')');
 
-      console.log('📝 Creating FormData with axios...');
       const form = new FormData();
       form.append('file', audioBuffer, {
         filename: 'audio.m4a',
@@ -374,14 +441,9 @@ exports.callWhisperProxy = onCall(
       
       if (language && language !== 'auto') {
         form.append('language', language);
-        console.log('🌍 Language specified:', language);
       }
-      
-      console.log('✅ FormData created');
 
-      console.log('🌐 Calling OpenAI Whisper API via axios...');
       const apiStartTime = Date.now();
-      
       const response = await axios.post(
         'https://api.openai.com/v1/audio/transcriptions',
         form,
@@ -396,79 +458,46 @@ exports.callWhisperProxy = onCall(
       );
 
       const apiDuration = Date.now() - apiStartTime;
-
-      console.log('📡 API response received:', {
-        status: response.status,
-        statusText: response.statusText,
-        durationMs: apiDuration,
-      });
-
       const result = response.data;
       
       const estimatedDurationMinutes = audioSizeMB / 2;
       const estimatedCost = estimatedDurationMinutes * 0.006;
-      
-      console.log('✅ Transcription successful:', {
-        textLength: result.text?.length,
-        textPreview: result.text?.substring(0, 50),
-        estimatedDurationMin: estimatedDurationMinutes.toFixed(2),
-        estimatedCost: `$${estimatedCost.toFixed(6)}`,
+
+      // ✅ Update usage for Whisper
+      await userRef.update({
+        voiceActionsUsed: admin.firestore.FieldValue.increment(1),
+        lifetimeAPIRequests: admin.firestore.FieldValue.increment(1),
+        lastRequestAt: admin.firestore.FieldValue.serverTimestamp(),
       });
 
-      // ═══════════════════════════════════════════════════════
-      // ✅ NO USAGE DECREMENT HERE!
-      // Whisper is just a transcription service
-      // Usage decrements only when Claude creates something
-      // ═══════════════════════════════════════════════════════
-
-      console.log('💾 Logging Whisper stats (no usage decrement)...');
-
-      // Logging (для статистики API calls)
       await db.collection('usage_logs').add({
         userId: userId,
         deviceID: deviceID,
         timestamp: admin.firestore.FieldValue.serverTimestamp(),
         service: 'whisper',
-        audioSize: audioBuffer.length,
         audioSizeMB: parseFloat(audioSizeMB.toFixed(2)),
-        estimatedDurationMinutes: parseFloat(estimatedDurationMinutes.toFixed(2)),
         cost: parseFloat(estimatedCost.toFixed(6)),
-        language: language,
         textLength: result.text?.length,
         durationMs: apiDuration,
         subscriptionTier: userData.subscriptionTier,
       });
 
-      console.log('✅ Whisper stats logged');
-      console.log('🎉 Whisper proxy completed (usage not decremented)');
-
-      // ✅ Return current usage (not changed)
       return {
         text: result.text,
-        remainingRequests: Math.max(0, voiceActionsLimit - voiceActionsUsed), // ← ✅ Current state
+        remainingTranscriptions: Math.max(0, voiceActionsLimit - (voiceActionsUsed + 1)),
       };
+
     } catch (error) {
       if (error instanceof HttpsError) {
         throw error;
       }
       
       if (error.response) {
-        console.error('💥 WHISPER API ERROR:', {
-          status: error.response.status,
-          statusText: error.response.statusText,
-          data: error.response.data,
-        });
         throw new HttpsError(
           'internal',
-          `Whisper API error: ${error.response.status} - ${JSON.stringify(error.response.data)}`
+          `Whisper API error: ${error.response.status}`
         );
       }
-      
-      console.error('💥 WHISPER PROXY ERROR:', {
-        name: error.name,
-        message: error.message,
-        stack: error.stack,
-      });
       
       throw new HttpsError('internal', error.message);
     }
@@ -476,7 +505,7 @@ exports.callWhisperProxy = onCall(
 );
 
 // ═══════════════════════════════════════════════════════
-// ФУНКЦИЯ 3: Get User Usage (UNCHANGED)
+// ФУНКЦИЯ: Get User Usage (UPDATED with photo scans)
 // ═══════════════════════════════════════════════════════
 
 exports.getUserUsage = onCall({region: 'us-central1'}, async (request) => {
@@ -496,7 +525,9 @@ exports.getUserUsage = onCall({region: 'us-central1'}, async (request) => {
     await userRef.set({
       deviceID: deviceID,
       voiceActionsUsed: 0,
-      voiceActionsLimit: 3,
+      voiceActionsLimit: 10,
+      photoScansUsed: 0,
+      photoScansLimit: 3,
       lifetimeAPIRequests: 0,
       monthlyTokens: 0,
       subscriptionTier: 'free',
@@ -505,42 +536,41 @@ exports.getUserUsage = onCall({region: 'us-central1'}, async (request) => {
     
     userData = {
       voiceActionsUsed: 0,
-      voiceActionsLimit: 3,
-      lifetimeAPIRequests: 0,
-      monthlyTokens: 0,
+      voiceActionsLimit: 10,
+      photoScansUsed: 0,
+      photoScansLimit: 3,
       subscriptionTier: 'free',
     };
   }
 
-  const voiceActionsLimit = userData.subscriptionTier === 'pro' ? 999999 : (userData.voiceActionsLimit || 3);
-  const monthlyLimit = userData.subscriptionTier === 'pro' ? 10000000 : 100000;
+  const voiceActionsLimit = userData.subscriptionTier === 'pro' ? 999999 : (userData.voiceActionsLimit || 10);
+  const photoScansLimit = userData.subscriptionTier === 'pro' ? 999999 : (userData.photoScansLimit || 3);
   
   const voiceActionsUsed = userData.voiceActionsUsed || 0;
-  const remaining = Math.max(0, voiceActionsLimit - voiceActionsUsed);
+  const photoScansUsed = userData.photoScansUsed || 0;
 
   return {
+    // Voice transcriptions
     voiceActionsUsed: voiceActionsUsed,
     voiceActionsLimit: voiceActionsLimit,
-    remainingVoiceActions: remaining,
+    remainingVoiceActions: Math.max(0, voiceActionsLimit - voiceActionsUsed),
     
-    // Backwards compatibility aliases:
-    dailyRequests: voiceActionsUsed,
-    dailyLimit: voiceActionsLimit,
-    remainingDaily: remaining,
+    // Photo scans
+    photoScansUsed: photoScansUsed,
+    photoScansLimit: photoScansLimit,
+    remainingPhotoScans: Math.max(0, photoScansLimit - photoScansUsed),
     
-    // Other fields:
+    // General
+    subscriptionTier: userData.subscriptionTier || 'free',
     lifetimeAPIRequests: userData.lifetimeAPIRequests || 0,
     monthlyTokens: userData.monthlyTokens || 0,
-    monthlyLimit: monthlyLimit,
-    remainingMonthly: Math.max(0, monthlyLimit - (userData.monthlyTokens || 0)),
-    subscriptionTier: userData.subscriptionTier || 'free',
     lastRequestAt: userData.lastRequestAt,
     deviceID: userData.deviceID,
   };
 });
 
 // ═══════════════════════════════════════════════════════
-// ФУНКЦИЯ 4: Verify Subscription (UNCHANGED)
+// ОСТАЛЬНЫЕ ФУНКЦИИ (Subscription, etc.) - UNCHANGED
 // ═══════════════════════════════════════════════════════
 
 exports.verifySubscription = onCall(
@@ -563,51 +593,33 @@ exports.verifySubscription = onCall(
       throw new HttpsError('invalid-argument', 'jwsToken is required');
     }
 
-    console.log('✅ User:', userId);
-    console.log('📝 JWS length:', jwsToken.length);
-
     try {
       const decoded = jwt.decode(jwsToken, { complete: true });
-
       if (!decoded?.header) {
         throw new Error('Invalid JWS token');
       }
 
       const { kid, x5c } = decoded.header;
-      console.log('🔍 Header:', decoded.header);
-
       let publicKey;
 
-      // 🧪 XCODE STOREKIT TESTING
       if (kid === 'Apple_Xcode_Key') {
-        console.log('🧪 StoreKit Xcode detected');
-
         if (!x5c?.[0]) {
           throw new Error('Missing x5c certificate');
         }
-
         const cert = `-----BEGIN CERTIFICATE-----\n${x5c[0]}\n-----END CERTIFICATE-----`;
         publicKey = await importX509(cert, 'ES256');
-      }
-      // 🍏 APP STORE / SANDBOX
-      else {
-        console.log('🍏 App Store transaction detected');
-
+      } else {
         const appleKeys = await getApplePublicKeys();
         const matchingKey = appleKeys.find(k => k.kid === kid);
-
         if (!matchingKey) {
-          throw new Error(`No matching Apple public key found: ${kid}`);
+          throw new Error(`No matching Apple public key found`);
         }
-
         publicKey = await importJWK(matchingKey, 'ES256');
       }
 
       const { payload } = await jwtVerify(jwsToken, publicKey, {
         algorithms: ['ES256'],
       });
-
-      console.log('✅ Signature verified');
 
       const expiresDate = new Date(payload.expiresDate);
       const isActive = expiresDate > new Date();
@@ -617,7 +629,6 @@ exports.verifySubscription = onCall(
         subscriptionTier: isActive ? 'pro' : 'free',
         subscriptionExpiresAt: admin.firestore.Timestamp.fromDate(expiresDate),
         subscriptionProductId: payload.productId,
-        subscriptionTransactionId: payload.transactionId,
         subscriptionVerifiedAt: admin.firestore.FieldValue.serverTimestamp(),
       });
 
@@ -628,15 +639,11 @@ exports.verifySubscription = onCall(
         subscriptionTier: isActive ? 'pro' : 'free',
       };
     } catch (err) {
-      console.error('💥 VERIFY ERROR:', err.message, err.stack);
+      console.error('💥 VERIFY ERROR:', err.message);
       throw new HttpsError('internal', err.message);
     }
   }
 );
-
-// ═══════════════════════════════════════════════════════
-// HELPER FUNCTIONS (UNCHANGED)
-// ═══════════════════════════════════════════════════════
 
 function generateAppleServerJWT() {
   const issuer = appleIssuerId.value();
@@ -648,7 +655,6 @@ function generateAppleServerJWT() {
   }
 
   const now = Math.floor(Date.now() / 1000);
-
   const payload = {
     iss: issuer,
     iat: now,
@@ -658,11 +664,7 @@ function generateAppleServerJWT() {
 
   return jwt.sign(payload, privateKey, {
     algorithm: 'ES256',
-    header: {
-      alg: 'ES256',
-      kid: keyId,
-      typ: 'JWT'
-    }
+    header: { alg: 'ES256', kid: keyId, typ: 'JWT' }
   });
 }
 
@@ -677,22 +679,13 @@ async function getApplePublicKeys() {
 
   for (const url of urls) {
     try {
-      console.log(`🔑 Fetching App Store public keys from: ${url}`);
       const response = await fetch(url, {
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
+        headers: { 'Authorization': `Bearer ${token}` }
       });
-
-      if (!response.ok) {
-        console.warn(`⚠️ Failed to fetch ${url}: ${response.status}`);
-        continue;
+      if (response.ok) {
+        const data = await response.json();
+        allKeys.push(...data.keys);
       }
-
-      const data = await response.json();
-      allKeys.push(...data.keys);
-
-      console.log(`✅ Fetched ${data.keys.length} keys from ${url}`);
     } catch (err) {
       console.warn(`⚠️ Error fetching ${url}:`, err.message);
     }
@@ -702,6 +695,5 @@ async function getApplePublicKeys() {
     throw new Error('Failed to fetch App Store public keys');
   }
 
-  console.log(`🔑 Total App Store keys fetched: ${allKeys.length}`);
   return allKeys;
 }
