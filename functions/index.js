@@ -20,8 +20,8 @@ const applePrivateKey = defineSecret('APPLE_PRIVATE_KEY');
 
 // Claude model names
 const CLAUDE_TEXT_MODEL = 'claude-3-5-haiku-20241022';
-const CLAUDE_VISION_MODEL = 'claude-3-5-sonnet-20240620';
-const CLAUDE_VISION_FALLBACK_MODEL = 'claude-3-5-sonnet-latest';
+const CLAUDE_VISION_MODEL = 'claude-3-5-haiku-20241022';
+const CLAUDE_VISION_FALLBACK_MODEL = 'claude-3-haiku-20240307';
 
 // Photo scan prompt templates
 function getPhotoScanPrompt(photoType, customPrompt) {
