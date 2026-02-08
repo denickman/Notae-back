@@ -18,6 +18,33 @@ const appleIssuerId = defineSecret('APPLE_ISSUER_ID');
 const appleKeyId = defineSecret('APPLE_KEY_ID');
 const applePrivateKey = defineSecret('APPLE_PRIVATE_KEY');
 
+const FREE_VOICE_LIMIT = 7;
+const FREE_PHOTO_LIMIT = 3;
+
+const getDayKey = () => new Date().toISOString().slice(0, 10); // UTC YYYY-MM-DD
+
+async function ensureDailyVoiceReset(userRef, userData) {
+  const dayKey = getDayKey();
+  const tier = userData.subscriptionTier || 'free';
+  const needsLimitFix = tier !== 'pro' && (userData.voiceActionsLimit || FREE_VOICE_LIMIT) !== FREE_VOICE_LIMIT;
+  const needsReset = tier !== 'pro' && userData.voiceActionsDayKey !== dayKey;
+
+  if (needsReset || needsLimitFix) {
+    await userRef.update({
+      voiceActionsUsed: needsReset ? 0 : (userData.voiceActionsUsed || 0),
+      voiceActionsDayKey: dayKey,
+      ...(needsLimitFix ? { voiceActionsLimit: FREE_VOICE_LIMIT } : {}),
+    });
+    userData.voiceActionsUsed = needsReset ? 0 : (userData.voiceActionsUsed || 0);
+    userData.voiceActionsDayKey = dayKey;
+    if (needsLimitFix) {
+      userData.voiceActionsLimit = FREE_VOICE_LIMIT;
+    }
+  }
+
+  return userData;
+}
+
 // ═══════════════════════════════════════════════════════
 // 🆕 НОВАЯ ФУНКЦИЯ: Claude Vision (Photo Scan)
 // ═══════════════════════════════════════════════════════
@@ -77,12 +104,14 @@ exports.callClaudeVision = onCall(
 
       if (!userDoc.exists) {
         console.log('📝 Creating new user document');
+        const dayKey = getDayKey();
         await userRef.set({
           deviceID: deviceID,
           photoScansUsed: 0,
-          photoScansLimit: 3,
+          photoScansLimit: FREE_PHOTO_LIMIT,
           voiceActionsUsed: 0,
-          voiceActionsLimit: 10,
+          voiceActionsLimit: FREE_VOICE_LIMIT,
+          voiceActionsDayKey: dayKey,
           subscriptionTier: 'free',
           createdAt: admin.firestore.FieldValue.serverTimestamp(),
         });
@@ -90,7 +119,10 @@ exports.callClaudeVision = onCall(
 
       let userData = userDoc.data() || {
         photoScansUsed: 0,
-        photoScansLimit: 3,
+        photoScansLimit: FREE_PHOTO_LIMIT,
+        voiceActionsUsed: 0,
+        voiceActionsLimit: FREE_VOICE_LIMIT,
+        voiceActionsDayKey: getDayKey(),
         subscriptionTier: 'free'
       };
       
@@ -407,12 +439,14 @@ exports.callWhisperProxy = onCall(
       const userDoc = await userRef.get();
       
       if (!userDoc.exists) {
+        const dayKey = getDayKey();
         await userRef.set({
           deviceID: deviceID,
           voiceActionsUsed: 0,
-          voiceActionsLimit: 10,
+          voiceActionsLimit: FREE_VOICE_LIMIT,
+          voiceActionsDayKey: dayKey,
           photoScansUsed: 0,
-          photoScansLimit: 3,
+          photoScansLimit: FREE_PHOTO_LIMIT,
           subscriptionTier: 'free',
           createdAt: admin.firestore.FieldValue.serverTimestamp(),
         });
@@ -420,11 +454,14 @@ exports.callWhisperProxy = onCall(
       
       let userData = userDoc.data() || {
         voiceActionsUsed: 0,
-        voiceActionsLimit: 10,
+        voiceActionsLimit: FREE_VOICE_LIMIT,
+        voiceActionsDayKey: getDayKey(),
         subscriptionTier: 'free'
       };
-      
-      const voiceActionsLimit = userData.subscriptionTier === 'pro' ? 999999 : (userData.voiceActionsLimit || 10);
+
+      userData = await ensureDailyVoiceReset(userRef, userData);
+
+      const voiceActionsLimit = userData.subscriptionTier === 'pro' ? 999999 : (userData.voiceActionsLimit || FREE_VOICE_LIMIT);
       const voiceActionsUsed = userData.voiceActionsUsed || 0;
 
       const apiKey = openaiApiKey.value();
@@ -522,12 +559,14 @@ exports.getUserUsage = onCall({region: 'us-central1'}, async (request) => {
   let userData = userDoc.data();
 
   if (!userData) {
+    const dayKey = getDayKey();
     await userRef.set({
       deviceID: deviceID,
       voiceActionsUsed: 0,
-      voiceActionsLimit: 10,
+      voiceActionsLimit: FREE_VOICE_LIMIT,
+      voiceActionsDayKey: dayKey,
       photoScansUsed: 0,
-      photoScansLimit: 3,
+      photoScansLimit: FREE_PHOTO_LIMIT,
       lifetimeAPIRequests: 0,
       monthlyTokens: 0,
       subscriptionTier: 'free',
@@ -536,15 +575,18 @@ exports.getUserUsage = onCall({region: 'us-central1'}, async (request) => {
     
     userData = {
       voiceActionsUsed: 0,
-      voiceActionsLimit: 10,
+      voiceActionsLimit: FREE_VOICE_LIMIT,
+      voiceActionsDayKey: dayKey,
       photoScansUsed: 0,
-      photoScansLimit: 3,
+      photoScansLimit: FREE_PHOTO_LIMIT,
       subscriptionTier: 'free',
     };
   }
 
-  const voiceActionsLimit = userData.subscriptionTier === 'pro' ? 999999 : (userData.voiceActionsLimit || 10);
-  const photoScansLimit = userData.subscriptionTier === 'pro' ? 999999 : (userData.photoScansLimit || 3);
+  userData = await ensureDailyVoiceReset(userRef, userData);
+
+  const voiceActionsLimit = userData.subscriptionTier === 'pro' ? 999999 : (userData.voiceActionsLimit || FREE_VOICE_LIMIT);
+  const photoScansLimit = userData.subscriptionTier === 'pro' ? 999999 : (userData.photoScansLimit || FREE_PHOTO_LIMIT);
   
   const voiceActionsUsed = userData.voiceActionsUsed || 0;
   const photoScansUsed = userData.photoScansUsed || 0;
