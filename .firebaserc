@@ -1,5 +1,8 @@
 {
   "projects": {
-    "default": "notae-91299"
-  }
+    "dev": "notae-development",
+    "prod": "notae-production"
+  },
+  "targets": {},
+  "etags": {}
 }
