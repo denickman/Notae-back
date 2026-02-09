@@ -46,7 +46,7 @@ async function ensureDailyVoiceReset(userRef, userData) {
 }
 
 // ═══════════════════════════════════════════════════════
-// 🆕 НОВАЯ ФУНКЦИЯ: Claude Vision (Photo Scan)
+// 🆕 NEW FUNCTION: Claude Vision (Photo Scan)
 // ═══════════════════════════════════════════════════════
 
 exports.callClaudeVision = onCall(
@@ -162,48 +162,82 @@ exports.callClaudeVision = onCall(
         throw new HttpsError('failed-precondition', 'API key not configured');
       }
 
-      console.log('🌐 Calling Claude Vision API...');
       const apiStartTime = Date.now();
-      
-      const response = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: {
-          'x-api-key': apiKey,
-          'anthropic-version': '2023-06-01',
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify({
-          model: 'claude-3-5-sonnet-20241022', // Vision-enabled model
-          max_tokens: 4096,
-          messages: [{
-            role: 'user',
-            content: [
-              {
-                type: 'image',
-                source: {
-                  type: 'base64',
-                  media_type: mediaType,
-                  data: imageBase64
-                }
-              },
-              {
-                type: 'text',
-                text: systemPrompt
-              }
-            ]
-          }]
-        }),
-      });
+      const modelFallbacks = [
+        'claude-sonnet-4-5-20250929',
+        'claude-sonnet-4-20250514',
+        'claude-haiku-4-5-20251001',
+        'claude-3-5-haiku-20241022',
+        'claude-3-haiku-20240307',
+      ];
+      let result;
+      let modelUsed;
+      let lastErrorText;
 
-      const apiDuration = Date.now() - apiStartTime;
+      for (const model of modelFallbacks) {
+        console.log(`🌐 Calling Claude Vision API (${model})...`);
+        try {
+          const response = await fetch('https://api.anthropic.com/v1/messages', {
+            method: 'POST',
+            headers: {
+              'x-api-key': apiKey,
+              'anthropic-version': '2023-06-01',
+              'content-type': 'application/json',
+            },
+            body: JSON.stringify({
+              model,
+              max_tokens: 4096,
+              messages: [{
+                role: 'user',
+                content: [
+                  {
+                    type: 'image',
+                    source: {
+                      type: 'base64',
+                      media_type: mediaType,
+                      data: imageBase64
+                    }
+                  },
+                  {
+                    type: 'text',
+                    text: systemPrompt
+                  }
+                ]
+              }]
+            }),
+          });
 
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error('❌ Claude Vision API error:', errorText);
-        throw new HttpsError('internal', `Claude API error: ${response.statusText}`);
+          if (!response.ok) {
+            const errorText = await response.text();
+            lastErrorText = errorText;
+            console.error(`❌ Claude Vision API error (${model}):`, errorText);
+
+            if (response.status === 404 || errorText.includes('not_found')) {
+              continue;
+            }
+
+            throw new HttpsError('internal', `Claude API error: ${response.statusText}`);
+          }
+
+          result = await response.json();
+          modelUsed = model;
+          break;
+        } catch (error) {
+          if (error instanceof HttpsError) {
+            throw error;
+          }
+          lastErrorText = error.message;
+          if (model === modelFallbacks[modelFallbacks.length - 1]) {
+            throw new HttpsError('internal', error.message);
+          }
+        }
       }
 
-      const result = await response.json();
+      if (!result) {
+        throw new HttpsError('internal', `Claude API error: ${lastErrorText || 'Unknown error'}`);
+      }
+
+      const apiDuration = Date.now() - apiStartTime;
       
       // Extract text from response
       const textContent = result.content
@@ -217,6 +251,7 @@ exports.callClaudeVision = onCall(
       ) / 1000000;
       
       console.log('✅ Claude Vision response:', {
+        model: modelUsed,
         inputTokens: result.usage.input_tokens,
         outputTokens: result.usage.output_tokens,
         estimatedCost: `$${estimatedCost.toFixed(6)}`,
@@ -240,7 +275,7 @@ exports.callClaudeVision = onCall(
         deviceID: deviceID,
         timestamp: admin.firestore.FieldValue.serverTimestamp(),
         service: 'claude-vision',
-        model: 'claude-3-5-sonnet-20241022',
+        model: modelUsed,
         photoType: photoType,
         imageSizeMB: parseFloat(estimatedSizeMB.toFixed(2)),
         inputTokens: result.usage.input_tokens,
@@ -396,7 +431,7 @@ Keep formatting clean and professional.`
 }
 
 // ═══════════════════════════════════════════════════════
-// ФУНКЦИЯ: Whisper Proxy (UNCHANGED from your current)
+// Function: Whisper Proxy (UNCHANGED from your current)
 // ═══════════════════════════════════════════════════════
 
 exports.callWhisperProxy = onCall(
@@ -543,7 +578,7 @@ exports.callWhisperProxy = onCall(
 );
 
 // ═══════════════════════════════════════════════════════
-// ФУНКЦИЯ: Get User Usage (UPDATED with photo scans)
+// Function: Get User Usage (UPDATED with photo scans)
 // ═══════════════════════════════════════════════════════
 
 exports.getUserUsage = onCall({region: 'us-central1'}, async (request) => {
@@ -613,7 +648,7 @@ exports.getUserUsage = onCall({region: 'us-central1'}, async (request) => {
 });
 
 // ═══════════════════════════════════════════════════════
-// ОСТАЛЬНЫЕ ФУНКЦИИ (Subscription, etc.) - UNCHANGED
+// Other functions (Subscription, etc.) - UNCHANGED
 // ═══════════════════════════════════════════════════════
 
 exports.verifySubscription = onCall(
