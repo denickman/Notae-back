@@ -522,6 +522,7 @@ exports.callWhisperProxy = onCall(
       return {
         text: result.text,
         remainingTranscriptions: Math.max(0, voiceActionsLimit - (voiceActionsUsed + 1)),
+        remainingRequests: Math.max(0, voiceActionsLimit - (voiceActionsUsed + 1)),
       };
 
     } catch (error) {
