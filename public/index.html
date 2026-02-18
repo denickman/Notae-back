@@ -1,37 +1,214 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Notae - Legal Documents</title>
+    <meta name="description" content="Notae - AI-powered voice notes and transcription app for iOS. Transform your voice into organized, searchable notes instantly.">
+    <title>Notae - Voice Notes Reimagined with AI</title>
+    
     <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-            max-width: 800px;
-            margin: 50px auto;
-            padding: 20px;
             line-height: 1.6;
+            color: #1d1d1f;
         }
-        h1 { color: #007AFF; }
-        a {
-            display: block;
-            margin: 20px 0;
-            color: #007AFF;
+        
+        .hero {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 100px 20px 120px;
+            text-align: center;
+        }
+        
+        .app-icon {
+            font-size: 5rem;
+            margin-bottom: 20px;
+            animation: float 3s ease-in-out infinite;
+        }
+        
+        @keyframes float {
+            0%, 100% { transform: translateY(0px); }
+            50% { transform: translateY(-10px); }
+        }
+        
+        .hero h1 {
+            font-size: 3.5rem;
+            font-weight: 700;
+            margin-bottom: 20px;
+        }
+        
+        .tagline {
+            font-size: 1.5rem;
+            margin-bottom: 40px;
+        }
+        
+        .btn {
+            padding: 15px 40px;
+            font-size: 1.1rem;
+            border-radius: 30px;
             text-decoration: none;
-            font-size: 18px;
+            font-weight: 600;
+            transition: all 0.3s;
+            display: inline-block;
+            margin: 10px;
         }
-        a:hover { text-decoration: underline; }
+        
+        .btn-primary {
+            background: white;
+            color: #667eea;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+        }
+        
+        .btn-primary:hover {
+            transform: translateY(-3px);
+        }
+        
+        .features {
+            padding: 80px 20px;
+            background: white;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        
+        h2 {
+            text-align: center;
+            font-size: 2.5rem;
+            margin-bottom: 60px;
+        }
+        
+        .feature-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 40px;
+        }
+        
+        .feature {
+            text-align: center;
+            padding: 30px;
+            border-radius: 20px;
+            background: #fafafa;
+            transition: transform 0.3s;
+        }
+        
+        .feature:hover {
+            transform: translateY(-10px);
+            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+        }
+        
+        .feature-icon {
+            font-size: 3rem;
+            margin-bottom: 20px;
+        }
+        
+        .feature h3 {
+            font-size: 1.5rem;
+            margin-bottom: 15px;
+        }
+        
+        .feature p {
+            color: #666;
+            font-size: 1.05rem;
+        }
+        
+        .footer {
+            background: #1d1d1f;
+            color: white;
+            padding: 60px 20px 30px;
+            text-align: center;
+        }
+        
+        .footer-links {
+            display: flex;
+            justify-content: center;
+            gap: 40px;
+            margin-bottom: 30px;
+            flex-wrap: wrap;
+        }
+        
+        .footer-links a {
+            color: white;
+            text-decoration: none;
+        }
+        
+        .footer-links a:hover {
+            opacity: 0.7;
+        }
+        
+        @media (max-width: 768px) {
+            .hero h1 { font-size: 2.5rem; }
+            .tagline { font-size: 1.2rem; }
+            .feature-grid { grid-template-columns: 1fr; }
+        }
     </style>
 </head>
 <body>
-    <h1>📱 Notae</h1>
-    <p>AI-powered voice notes and transcription app.</p>
+    <section class="hero">
+        <div class="app-icon">📱</div>
+        <h1>Notae</h1>
+        <p class="tagline">Voice notes reimagined with AI</p>
+        <p>Transform your voice into organized, searchable notes instantly.</p>
+        <a href="#features" class="btn btn-primary">Learn More</a>
+    </section>
     
-    <h2>Legal Documents</h2>
-    <a href="/privacy">Privacy Policy</a>
-    <a href="/terms">Terms of Service</a>
+    <section class="features">
+        <div class="container">
+            <h2 id="features">Powered by AI</h2>
+            <div class="feature-grid">
+                <div class="feature">
+                    <div class="feature-icon">🎤</div>
+                    <h3>Voice Recording</h3>
+                    <p>Record your thoughts hands-free with crystal-clear quality.</p>
+                </div>
+                
+                <div class="feature">
+                    <div class="feature-icon">🤖</div>
+                    <h3>AI Transcription</h3>
+                    <p>Powered by OpenAI Whisper for accurate voice-to-text.</p>
+                </div>
+                
+                <div class="feature">
+                    <div class="feature-icon">✨</div>
+                    <h3>Smart Organization</h3>
+                    <p>Claude AI automatically organizes your notes.</p>
+                </div>
+                
+                <div class="feature">
+                    <div class="feature-icon">📸</div>
+                    <h3>Photo Scanning</h3>
+                    <p>Scan documents with AI-powered text extraction.</p>
+                </div>
+                
+                <div class="feature">
+                    <div class="feature-icon">☁️</div>
+                    <h3>iCloud Sync</h3>
+                    <p>Sync seamlessly across all Apple devices.</p>
+                </div>
+                
+                <div class="feature">
+                    <div class="feature-icon">🔒</div>
+                    <h3>Privacy First</h3>
+                    <p>End-to-end encryption. We respect your privacy.</p>
+                </div>
+            </div>
+        </div>
+    </section>
     
-    <hr>
-    <p><small>© 2026 Denis Yaremenko. All rights reserved.</small></p>
+    <footer class="footer">
+        <div class="footer-links">
+            <a href="/privacy">Privacy Policy</a>
+            <a href="/terms">Terms of Service</a>
+            <a href="mailto:support@notaeapp.com">Contact</a>
+        </div>
+        <p style="color: #999;">© 2026 Denis Yaremenko. All rights reserved.</p>
+    </footer>
 </body>
 </html>

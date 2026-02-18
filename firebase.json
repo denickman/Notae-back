@@ -22,11 +22,11 @@
     "rewrites": [
       {
         "source": "/privacy",
-        "destination": "/privacy.html"
+        "destination": "/privacy_policy.html"
       },
       {
         "source": "/terms",
-        "destination": "/terms.html"
+        "destination": "/terms_of_use.html"
       }
     ],
     "headers": [
