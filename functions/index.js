@@ -21,22 +21,22 @@ const applePrivateKey = defineSecret('APPLE_PRIVATE_KEY');
 const FREE_VOICE_LIMIT = 7;
 const FREE_PHOTO_LIMIT = 3;
 
-const getDayKey = () => new Date().toISOString().slice(0, 10); // UTC YYYY-MM-DD
+const getMonthKey = () => new Date().toISOString().slice(0, 7); // UTC YYYY-MM
 
-async function ensureDailyVoiceReset(userRef, userData) {
-  const dayKey = getDayKey();
+async function ensureMonthlyVoiceReset(userRef, userData) {
+  const monthKey = getMonthKey();
   const tier = userData.subscriptionTier || 'free';
   const needsLimitFix = tier !== 'pro' && (userData.voiceActionsLimit || FREE_VOICE_LIMIT) !== FREE_VOICE_LIMIT;
-  const needsReset = tier !== 'pro' && userData.voiceActionsDayKey !== dayKey;
+  const needsReset = tier !== 'pro' && userData.voiceActionsDayKey !== monthKey;
 
   if (needsReset || needsLimitFix) {
     await userRef.update({
       voiceActionsUsed: needsReset ? 0 : (userData.voiceActionsUsed || 0),
-      voiceActionsDayKey: dayKey,
+      voiceActionsDayKey: monthKey,
       ...(needsLimitFix ? { voiceActionsLimit: FREE_VOICE_LIMIT } : {}),
     });
     userData.voiceActionsUsed = needsReset ? 0 : (userData.voiceActionsUsed || 0);
-    userData.voiceActionsDayKey = dayKey;
+    userData.voiceActionsDayKey = monthKey;
     if (needsLimitFix) {
       userData.voiceActionsLimit = FREE_VOICE_LIMIT;
     }
@@ -45,20 +45,20 @@ async function ensureDailyVoiceReset(userRef, userData) {
   return userData;
 }
 
-async function ensureDailyPhotoReset(userRef, userData) {
-  const dayKey = getDayKey();
+async function ensureMonthlyPhotoReset(userRef, userData) {
+  const monthKey = getMonthKey();
   const tier = userData.subscriptionTier || 'free';
   const needsLimitFix = tier !== 'pro' && (userData.photoScansLimit || FREE_PHOTO_LIMIT) !== FREE_PHOTO_LIMIT;
-  const needsReset = tier !== 'pro' && userData.photoScansDayKey !== dayKey;
+  const needsReset = tier !== 'pro' && userData.photoScansDayKey !== monthKey;
 
   if (needsReset || needsLimitFix) {
     await userRef.update({
       photoScansUsed: needsReset ? 0 : (userData.photoScansUsed || 0),
-      photoScansDayKey: dayKey,
+      photoScansDayKey: monthKey,
       ...(needsLimitFix ? { photoScansLimit: FREE_PHOTO_LIMIT } : {}),
     });
     userData.photoScansUsed = needsReset ? 0 : (userData.photoScansUsed || 0);
-    userData.photoScansDayKey = dayKey;
+    userData.photoScansDayKey = monthKey;
     if (needsLimitFix) {
       userData.photoScansLimit = FREE_PHOTO_LIMIT;
     }
@@ -126,15 +126,15 @@ exports.callClaudeVision = onCall(
 
       if (!userDoc.exists) {
         console.log('📝 Creating new user document');
-        const dayKey = getDayKey();
+        const monthKey = getMonthKey();
         await userRef.set({
           deviceID: deviceID,
           photoScansUsed: 0,
           photoScansLimit: FREE_PHOTO_LIMIT,
-          photoScansDayKey: dayKey,
+          photoScansDayKey: monthKey,
           voiceActionsUsed: 0,
           voiceActionsLimit: FREE_VOICE_LIMIT,
-          voiceActionsDayKey: dayKey,
+          voiceActionsDayKey: monthKey,
           subscriptionTier: 'free',
           createdAt: admin.firestore.FieldValue.serverTimestamp(),
         });
@@ -143,14 +143,14 @@ exports.callClaudeVision = onCall(
       let userData = userDoc.data() || {
         photoScansUsed: 0,
         photoScansLimit: FREE_PHOTO_LIMIT,
-        photoScansDayKey: getDayKey(),
+        photoScansDayKey: getMonthKey(),
         voiceActionsUsed: 0,
         voiceActionsLimit: FREE_VOICE_LIMIT,
-        voiceActionsDayKey: getDayKey(),
+        voiceActionsDayKey: getMonthKey(),
         subscriptionTier: 'free'
       };
 
-      userData = await ensureDailyPhotoReset(userRef, userData);
+      userData = await ensureMonthlyPhotoReset(userRef, userData);
       
       const photoScansLimit = userData.subscriptionTier === 'pro' ? 999999 : (userData.photoScansLimit || 3);
       const photoScansUsed = userData.photoScansUsed || 0;
@@ -500,15 +500,15 @@ exports.callWhisperProxy = onCall(
       const userDoc = await userRef.get();
       
       if (!userDoc.exists) {
-        const dayKey = getDayKey();
+        const monthKey = getMonthKey();
         await userRef.set({
           deviceID: deviceID,
           voiceActionsUsed: 0,
           voiceActionsLimit: FREE_VOICE_LIMIT,
-          voiceActionsDayKey: dayKey,
+          voiceActionsDayKey: monthKey,
           photoScansUsed: 0,
           photoScansLimit: FREE_PHOTO_LIMIT,
-          photoScansDayKey: dayKey,
+          photoScansDayKey: monthKey,
           subscriptionTier: 'free',
           createdAt: admin.firestore.FieldValue.serverTimestamp(),
         });
@@ -517,11 +517,11 @@ exports.callWhisperProxy = onCall(
       let userData = userDoc.data() || {
         voiceActionsUsed: 0,
         voiceActionsLimit: FREE_VOICE_LIMIT,
-        voiceActionsDayKey: getDayKey(),
+        voiceActionsDayKey: getMonthKey(),
         subscriptionTier: 'free'
       };
 
-      userData = await ensureDailyVoiceReset(userRef, userData);
+      userData = await ensureMonthlyVoiceReset(userRef, userData);
 
       const voiceActionsLimit = userData.subscriptionTier === 'pro' ? 999999 : (userData.voiceActionsLimit || FREE_VOICE_LIMIT);
       const voiceActionsUsed = userData.voiceActionsUsed || 0;
@@ -622,15 +622,15 @@ exports.getUserUsage = onCall({region: 'us-central1'}, async (request) => {
   let userData = userDoc.data();
 
   if (!userData) {
-    const dayKey = getDayKey();
+    const monthKey = getMonthKey();
     await userRef.set({
       deviceID: deviceID,
       voiceActionsUsed: 0,
       voiceActionsLimit: FREE_VOICE_LIMIT,
-      voiceActionsDayKey: dayKey,
+      voiceActionsDayKey: monthKey,
       photoScansUsed: 0,
       photoScansLimit: FREE_PHOTO_LIMIT,
-      photoScansDayKey: dayKey,
+      photoScansDayKey: monthKey,
       lifetimeAPIRequests: 0,
       monthlyTokens: 0,
       subscriptionTier: 'free',
@@ -640,16 +640,16 @@ exports.getUserUsage = onCall({region: 'us-central1'}, async (request) => {
     userData = {
       voiceActionsUsed: 0,
       voiceActionsLimit: FREE_VOICE_LIMIT,
-      voiceActionsDayKey: dayKey,
+      voiceActionsDayKey: monthKey,
       photoScansUsed: 0,
       photoScansLimit: FREE_PHOTO_LIMIT,
-      photoScansDayKey: dayKey,
+      photoScansDayKey: monthKey,
       subscriptionTier: 'free',
     };
   }
 
-  userData = await ensureDailyVoiceReset(userRef, userData);
-  userData = await ensureDailyPhotoReset(userRef, userData);
+  userData = await ensureMonthlyVoiceReset(userRef, userData);
+  userData = await ensureMonthlyPhotoReset(userRef, userData);
 
   const voiceActionsLimit = userData.subscriptionTier === 'pro' ? 999999 : (userData.voiceActionsLimit || FREE_VOICE_LIMIT);
   const photoScansLimit = userData.subscriptionTier === 'pro' ? 999999 : (userData.photoScansLimit || FREE_PHOTO_LIMIT);
