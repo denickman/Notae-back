@@ -3,210 +3,453 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Notae - Privacy Policy</title>
+    <title>Notae — Privacy Policy</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,300;12..96,400;12..96,500;12..96,700;12..96,800&family=DM+Sans:ital,wght@0,300;0,400;0,500;1,300&display=swap" rel="stylesheet">
+
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
+        :root {
+            --bg: #0a0a0f;
+            --bg2: #0f0f18;
+            --surface: #13131e;
+            --surface2: #1a1a28;
+            --border: rgba(255,255,255,0.07);
+            --accent: #6B7FFF;
+            --accent2: #A78BFA;
+            --accent3: #38BDF8;
+            --text: #f0f0f8;
+            --text-muted: rgba(240,240,248,0.45);
+            --text-dim: rgba(240,240,248,0.25);
+            --glow: 0 0 60px rgba(107,127,255,0.15);
         }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html { scroll-behavior: smooth; }
 
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-            line-height: 1.6;
-            color: #333;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            padding: 20px;
+            font-family: 'DM Sans', sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            overflow-x: hidden;
+            -webkit-font-smoothing: antialiased;
         }
 
-        .container {
-            max-width: 900px;
-            margin: 0 auto;
-            background: white;
-            border-radius: 20px;
-            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
-            overflow: hidden;
+        body::before {
+            content: '';
+            position: fixed;
+            inset: 0;
+            background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.04'/%3E%3C/svg%3E");
+            pointer-events: none;
+            z-index: 1000;
+            opacity: 0.6;
         }
 
-        .header {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            padding: 40px 30px;
-            text-align: center;
+        /* NAV */
+        nav {
+            position: fixed;
+            top: 0; left: 0; right: 0;
+            z-index: 100;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 20px 40px;
+            background: rgba(10,10,15,0.7);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border-bottom: 1px solid var(--border);
         }
 
-        .header h1 {
-            font-size: 2.5em;
-            margin-bottom: 10px;
+        .nav-logo {
+            font-family: 'Bricolage Grotesque', sans-serif;
             font-weight: 700;
+            font-size: 1.4rem;
+            letter-spacing: -0.03em;
+            background: linear-gradient(135deg, var(--accent), var(--accent2));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            text-decoration: none;
         }
 
-        .header p {
-            font-size: 1.1em;
-            opacity: 0.95;
+        .nav-back {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 10px 20px;
+            border-radius: 12px;
+            background: var(--surface);
+            color: var(--text-muted);
+            text-decoration: none;
+            font-size: 0.875rem;
+            font-weight: 500;
+            border: 1px solid var(--border);
+            transition: all 0.2s;
+        }
+        .nav-back:hover { color: var(--text); border-color: rgba(255,255,255,0.12); }
+
+        /* HERO */
+        .page-hero {
+            padding: 140px 20px 80px;
+            text-align: center;
+            position: relative;
+            overflow: hidden;
+            border-bottom: 1px solid var(--border);
         }
 
-        .content {
-            padding: 40px 30px;
+        .orb {
+            position: absolute;
+            border-radius: 50%;
+            filter: blur(80px);
+            pointer-events: none;
+        }
+        .orb-1 {
+            width: 500px; height: 500px;
+            background: radial-gradient(circle, rgba(107,127,255,0.12) 0%, transparent 70%);
+            top: -100px; left: -100px;
+            animation: drift1 12s ease-in-out infinite;
+        }
+        .orb-2 {
+            width: 400px; height: 400px;
+            background: radial-gradient(circle, rgba(167,139,250,0.1) 0%, transparent 70%);
+            bottom: -60px; right: -60px;
+            animation: drift2 15s ease-in-out infinite;
         }
 
+        @keyframes drift1 {
+            0%, 100% { transform: translate(0, 0); }
+            50% { transform: translate(60px, 40px); }
+        }
+        @keyframes drift2 {
+            0%, 100% { transform: translate(0, 0); }
+            50% { transform: translate(-50px, -30px); }
+        }
+
+        .hero-grid {
+            position: absolute;
+            inset: 0;
+            background-image:
+                linear-gradient(rgba(107,127,255,0.04) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(107,127,255,0.04) 1px, transparent 1px);
+            background-size: 60px 60px;
+            mask-image: radial-gradient(ellipse 80% 80% at 50% 50%, black 0%, transparent 100%);
+            -webkit-mask-image: radial-gradient(ellipse 80% 80% at 50% 50%, black 0%, transparent 100%);
+        }
+
+        .page-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 16px;
+            border-radius: 100px;
+            background: rgba(107,127,255,0.1);
+            border: 1px solid rgba(107,127,255,0.25);
+            font-size: 0.8rem;
+            font-weight: 500;
+            color: var(--accent2);
+            letter-spacing: 0.04em;
+            margin-bottom: 24px;
+        }
+
+        .page-hero h1 {
+            font-family: 'Bricolage Grotesque', sans-serif;
+            font-size: clamp(2.5rem, 6vw, 5rem);
+            font-weight: 800;
+            line-height: 1;
+            letter-spacing: -0.04em;
+            margin-bottom: 16px;
+        }
+
+        .page-hero h1 span {
+            background: linear-gradient(135deg, var(--accent) 0%, var(--accent2) 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .page-hero p {
+            color: var(--text-muted);
+            font-size: 1rem;
+            font-weight: 300;
+        }
+
+        /* CONTENT */
+        .content-wrap {
+            max-width: 860px;
+            margin: 0 auto;
+            padding: 80px 20px 120px;
+        }
+
+        /* Last updated */
         .last-updated {
-            background: #f8f9fa;
-            border-left: 4px solid #667eea;
-            padding: 15px 20px;
-            margin-bottom: 30px;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 16px;
             border-radius: 8px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            margin-bottom: 48px;
         }
+        .last-updated strong { color: var(--accent); }
 
-        .last-updated strong {
-            color: #667eea;
+        /* Alert boxes */
+        .alert {
+            padding: 20px 24px;
+            border-radius: 16px;
+            margin: 32px 0;
+            border: 1px solid;
+        }
+        .alert-info {
+            background: rgba(107,127,255,0.08);
+            border-color: rgba(107,127,255,0.2);
+        }
+        .alert-warning {
+            background: rgba(251,191,36,0.07);
+            border-color: rgba(251,191,36,0.2);
+        }
+        .alert-success {
+            background: rgba(52,211,153,0.07);
+            border-color: rgba(52,211,153,0.2);
+        }
+        .alert-danger {
+            background: rgba(239,68,68,0.07);
+            border-color: rgba(239,68,68,0.2);
+        }
+        .alert strong {
+            display: block;
+            margin-bottom: 8px;
+            font-size: 0.85rem;
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+        }
+        .alert-info strong { color: var(--accent); }
+        .alert-warning strong { color: #FBD024; }
+        .alert-success strong { color: #34D399; }
+        .alert-danger strong { color: #EF4444; }
+        .alert p, .alert ul { color: var(--text-muted); font-size: 0.9rem; }
+
+        /* Sections */
+        .doc-section {
+            margin-bottom: 56px;
         }
 
         h2 {
-            color: #667eea;
-            font-size: 1.8em;
-            margin-top: 40px;
+            font-family: 'Bricolage Grotesque', sans-serif;
+            font-size: 1.6rem;
+            font-weight: 700;
+            letter-spacing: -0.02em;
             margin-bottom: 20px;
-            padding-bottom: 10px;
-            border-bottom: 2px solid #e9ecef;
+            padding-bottom: 16px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        h2 .section-num {
+            font-size: 0.75rem;
+            font-weight: 600;
+            padding: 3px 10px;
+            border-radius: 100px;
+            background: rgba(107,127,255,0.12);
+            color: var(--accent);
+            letter-spacing: 0.05em;
         }
 
         h3 {
-            color: #764ba2;
-            font-size: 1.3em;
-            margin-top: 25px;
-            margin-bottom: 15px;
+            font-family: 'Bricolage Grotesque', sans-serif;
+            font-size: 1.1rem;
+            font-weight: 600;
+            letter-spacing: -0.01em;
+            color: var(--accent2);
+            margin: 28px 0 14px;
         }
 
         p {
-            margin-bottom: 15px;
-            text-align: justify;
+            color: var(--text-muted);
+            font-size: 0.95rem;
+            line-height: 1.8;
+            font-weight: 300;
+            margin-bottom: 14px;
         }
 
         ul, ol {
-            margin: 15px 0 15px 30px;
+            padding-left: 0;
+            list-style: none;
+            margin: 16px 0;
         }
 
         li {
-            margin-bottom: 10px;
+            color: var(--text-muted);
+            font-size: 0.9rem;
+            line-height: 1.7;
+            font-weight: 300;
+            padding: 6px 0 6px 24px;
+            position: relative;
+            border-bottom: 1px solid rgba(255,255,255,0.03);
+        }
+        li:last-child { border-bottom: none; }
+        li::before {
+            content: '→';
+            position: absolute;
+            left: 0;
+            color: var(--accent);
+            font-size: 0.8rem;
         }
 
-        .highlight {
-            background: #d1ecf1;
-            border-left: 4px solid #0c5460;
-            padding: 15px;
-            margin: 20px 0;
-            border-radius: 8px;
+        ol { counter-reset: ol-counter; }
+        ol li { counter-increment: ol-counter; }
+        ol li::before {
+            content: counter(ol-counter) '.';
+            font-family: 'Bricolage Grotesque', sans-serif;
+            font-weight: 700;
+            font-size: 0.75rem;
+            color: var(--accent);
         }
 
-        .important {
-            background: #f8d7da;
-            border-left: 4px solid #dc3545;
-            padding: 15px;
-            margin: 20px 0;
-            border-radius: 8px;
-            font-weight: 500;
-        }
+        strong { color: var(--text); font-weight: 500; }
+        a { color: var(--accent); text-decoration: none; }
+        a:hover { color: var(--accent2); }
 
-        .success {
-            background: #d4edda;
-            border-left: 4px solid #28a745;
-            padding: 15px;
-            margin: 20px 0;
-            border-radius: 8px;
-        }
-
-        .data-table {
+        /* Table */
+        .doc-table {
             width: 100%;
             border-collapse: collapse;
             margin: 20px 0;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            border-radius: 12px;
+            overflow: hidden;
+            border: 1px solid var(--border);
         }
-
-        .data-table th {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            padding: 15px;
+        .doc-table th {
+            background: var(--surface2);
+            padding: 14px 18px;
             text-align: left;
+            font-size: 0.75rem;
             font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            color: var(--text-muted);
+            border-bottom: 1px solid var(--border);
         }
-
-        .data-table td {
-            padding: 12px 15px;
-            border-bottom: 1px solid #e9ecef;
+        .doc-table td {
+            padding: 14px 18px;
+            font-size: 0.875rem;
+            color: var(--text-muted);
+            font-weight: 300;
+            border-bottom: 1px solid rgba(255,255,255,0.03);
+            background: var(--surface);
         }
+        .doc-table tr:last-child td { border-bottom: none; }
+        .doc-table tr:hover td { background: var(--surface2); }
 
-        .data-table tr:hover {
-            background: #f8f9fa;
-        }
-
+        /* Contact box */
         .contact-box {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            padding: 30px;
-            border-radius: 15px;
-            margin-top: 40px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 24px;
+            padding: 48px 40px;
             text-align: center;
+            position: relative;
+            overflow: hidden;
+            margin-top: 56px;
         }
-
+        .contact-box::before {
+            content: '';
+            position: absolute;
+            inset: 0;
+            background: radial-gradient(ellipse 60% 60% at 50% 0%, rgba(107,127,255,0.1) 0%, transparent 100%);
+            pointer-events: none;
+        }
         .contact-box h2 {
-            color: white;
+            font-family: 'Bricolage Grotesque', sans-serif;
+            font-size: 1.8rem;
             border: none;
-            margin: 0 0 15px 0;
+            padding: 0;
+            margin-bottom: 12px;
+            justify-content: center;
         }
-
+        .contact-box p {
+            color: var(--text-muted);
+            margin-bottom: 8px;
+        }
         .contact-box a {
-            color: white;
-            text-decoration: none;
-            font-weight: 600;
-            border-bottom: 2px solid white;
+            color: var(--accent);
         }
 
-        .footer {
-            background: #f8f9fa;
-            padding: 20px;
-            text-align: center;
-            color: #6c757d;
-            font-size: 0.9em;
+        /* Footer */
+        footer {
+            padding: 40px 20px;
+            border-top: 1px solid var(--border);
         }
+        .footer-inner {
+            max-width: 860px;
+            margin: 0 auto;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 16px;
+        }
+        .footer-brand {
+            font-family: 'Bricolage Grotesque', sans-serif;
+            font-weight: 700;
+            font-size: 1.1rem;
+            background: linear-gradient(135deg, var(--accent), var(--accent2));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        .footer-links { display: flex; gap: 24px; }
+        .footer-links a {
+            color: var(--text-muted);
+            font-size: 0.875rem;
+            text-decoration: none;
+            transition: color 0.2s;
+        }
+        .footer-links a:hover { color: var(--text); }
+        .footer-copy { font-size: 0.8rem; color: var(--text-dim); }
 
         @media (max-width: 768px) {
-            .header h1 {
-                font-size: 2em;
-            }
-            
-            .content {
-                padding: 30px 20px;
-            }
-
-            h2 {
-                font-size: 1.5em;
-            }
-
-            .data-table {
-                font-size: 0.9em;
-            }
+            nav { padding: 16px 20px; }
+            .page-hero { padding: 120px 20px 60px; }
+            .content-wrap { padding: 60px 20px 80px; }
+            .footer-inner { flex-direction: column; gap: 16px; text-align: center; }
+            .footer-links { flex-wrap: wrap; justify-content: center; }
         }
     </style>
 </head>
 <body>
-    <div class="container">
-        <div class="header">
-            <h1>🔒 Notae</h1>
-            <p>Privacy Policy</p>
+
+    <nav>
+        <a href="/" class="nav-logo">Notae</a>
+        <a href="/" class="nav-back">← Back to Home</a>
+    </nav>
+
+    <div class="page-hero">
+        <div class="orb orb-1"></div>
+        <div class="orb orb-2"></div>
+        <div class="hero-grid"></div>
+        <div class="page-badge">Legal</div>
+        <h1>Privacy <span>Policy</span></h1>
+        <p>Last Updated: February 8, 2026</p>
+    </div>
+
+    <div class="content-wrap">
+
+        <div class="last-updated">
+            <strong>Effective:</strong> February 8, 2026 &nbsp;·&nbsp; Denis Yaremenko
         </div>
 
-        <div class="content">
-            <div class="last-updated">
-                <strong>Last Updated:</strong> February 8, 2026
-            </div>
+        <div class="alert alert-danger">
+            <strong>Your Privacy Matters</strong>
+            <p>This Privacy Policy explains how Notae collects, uses, protects, and shares your personal information. By using the Notae application, you consent to the practices described in this policy.</p>
+        </div>
 
-            <div class="important">
-                <strong>YOUR PRIVACY MATTERS</strong><br>
-                This Privacy Policy explains how Notae collects, uses, protects, and shares your personal information. By using the Notae application, you consent to the practices described in this policy.
-            </div>
-
-            <h2>1. Introduction</h2>
+        <div class="doc-section">
+            <h2><span class="section-num">01</span> Introduction</h2>
             <p>This Privacy Policy applies to the Notae mobile application ("Application" or "App") for iOS devices, created by Denis Yaremenko ("Service Provider", "we", "us", or "our") as a freemium service.</p>
             <p>We are committed to protecting your privacy and being transparent about our data practices. This policy describes:</p>
             <ul>
@@ -215,11 +458,13 @@
                 <li>Your rights and choices regarding your data</li>
                 <li>How we comply with privacy laws and regulations</li>
             </ul>
+        </div>
 
-            <h2>2. Information We Collect</h2>
+        <div class="doc-section">
+            <h2><span class="section-num">02</span> Information We Collect</h2>
 
             <h3>2.1 Information You Provide Directly</h3>
-            <table class="data-table">
+            <table class="doc-table">
                 <tr>
                     <th>Data Type</th>
                     <th>Purpose</th>
@@ -253,7 +498,7 @@
             </table>
 
             <h3>2.2 Information Collected Automatically</h3>
-            <table class="data-table">
+            <table class="doc-table">
                 <tr>
                     <th>Data Type</th>
                     <th>Purpose</th>
@@ -271,21 +516,22 @@
                     <td>Bug fixes, stability improvements</td>
                 </tr>
                 <tr>
-                    <td><strong>Network Information</strong><br>IP address, network type (Wi-Fi/cellular)</td>
+                    <td><strong>Network Information</strong><br>IP address, network type</td>
                     <td>Service delivery, fraud prevention</td>
                 </tr>
             </table>
 
             <h3>2.3 Location Information</h3>
-            <div class="success">
-                <strong>✓ We DO NOT collect precise location data</strong><br>
-                The Application does not track or store your precise GPS location. We may derive general location information from your IP address for analytics purposes only (e.g., "United States" or "Ukraine"), but never specific coordinates.
+            <div class="alert alert-success">
+                <strong>✓ We DO NOT collect precise location data</strong>
+                <p>The Application does not track or store your precise GPS location. We may derive general location information from your IP address for analytics purposes only, but never specific coordinates.</p>
             </div>
+        </div>
 
-            <h2>3. How We Use Your Information</h2>
+        <div class="doc-section">
+            <h2><span class="section-num">03</span> How We Use Your Information</h2>
 
             <h3>3.1 Primary Uses</h3>
-            <p>We use your information to:</p>
             <ul>
                 <li><strong>Provide Core Services:</strong> Voice transcription, AI text processing, note storage and sync</li>
                 <li><strong>Process AI Requests:</strong> Send your audio/text to Whisper and Claude APIs for processing</li>
@@ -299,27 +545,19 @@
                 <li><strong>Analytics:</strong> Understand usage patterns, improve features, optimize performance</li>
                 <li><strong>Security:</strong> Detect fraud, prevent abuse, protect user accounts</li>
                 <li><strong>Communications:</strong> Send service updates, feature announcements (opt-out available)</li>
-                <li><strong>Product Development:</strong> Develop new features, test improvements</li>
                 <li><strong>Legal Compliance:</strong> Meet legal obligations, enforce Terms of Use</li>
             </ul>
+        </div>
 
-            <h3>3.3 Marketing Communications</h3>
-            <p>We may send you:</p>
-            <ul>
-                <li>Important service updates and security alerts (cannot opt-out)</li>
-                <li>New feature announcements (can opt-out)</li>
-                <li>Tips and best practices (can opt-out)</li>
-            </ul>
-            <p>You can manage email preferences in the app settings or by clicking "unsubscribe" in any marketing email.</p>
+        <div class="doc-section">
+            <h2><span class="section-num">04</span> AI Processing & Third-Party Services</h2>
 
-            <h2>4. AI Processing and Third-Party Services</h2>
-
-            <h3>4.1 AI Service Providers</h3>
-            <div class="highlight">
-                <strong>Important AI Disclosure:</strong> The Application uses artificial intelligence technologies that process your data through third-party services. By using AI features, you consent to this processing.
+            <div class="alert alert-info">
+                <strong>Important AI Disclosure</strong>
+                <p>The Application uses artificial intelligence technologies that process your data through third-party services. By using AI features, you consent to this processing.</p>
             </div>
 
-            <table class="data-table">
+            <table class="doc-table">
                 <tr>
                     <th>Service</th>
                     <th>Purpose</th>
@@ -330,95 +568,53 @@
                     <td><strong>OpenAI Whisper</strong></td>
                     <td>Voice transcription</td>
                     <td>Audio recordings</td>
-                    <td><a href="https://openai.com/privacy" target="_blank">OpenAI Privacy</a></td>
+                    <td><a href="https://openai.com/privacy" target="_blank">OpenAI Privacy ↗</a></td>
                 </tr>
                 <tr>
                     <td><strong>Anthropic Claude</strong></td>
-                    <td>Text enhancement, summarization, AI chat</td>
+                    <td>Text enhancement, AI chat</td>
                     <td>Text content, prompts</td>
-                    <td><a href="https://www.anthropic.com/legal/privacy" target="_blank">Anthropic Privacy</a></td>
+                    <td><a href="https://www.anthropic.com/legal/privacy" target="_blank">Anthropic Privacy ↗</a></td>
                 </tr>
                 <tr>
                     <td><strong>Claude Vision</strong></td>
                     <td>Photo scanning, text extraction</td>
                     <td>Images you upload</td>
-                    <td><a href="https://www.anthropic.com/legal/privacy" target="_blank">Anthropic Privacy</a></td>
-                </tr>
-            </table>
-
-            <h3>4.2 How AI Processing Works</h3>
-            <ol>
-                <li>You create a voice note or upload a photo</li>
-                <li>We send your content to the AI service via secure API</li>
-                <li>The AI service processes your content (transcribes audio, analyzes text/images)</li>
-                <li>The result is returned to our app and saved to your account</li>
-                <li>Your original content and AI results are stored in CloudKit</li>
-            </ol>
-
-            <h3>4.3 AI Data Retention by Third Parties</h3>
-            <p><strong>OpenAI:</strong> Processes audio for transcription but does not retain audio after processing (per their zero-retention policy for API users)</p>
-            <p><strong>Anthropic:</strong> May temporarily store prompts for service improvement but does not train models on your data (per their privacy policy)</p>
-            <p><em>Note: These are third-party policies subject to change. Please review their privacy policies for current information.</em></p>
-
-            <h3>4.4 Other Third-Party Services</h3>
-            <table class="data-table">
-                <tr>
-                    <th>Service</th>
-                    <th>Purpose</th>
-                    <th>Data Shared</th>
+                    <td><a href="https://www.anthropic.com/legal/privacy" target="_blank">Anthropic Privacy ↗</a></td>
                 </tr>
                 <tr>
-                    <td><strong>Firebase Authentication</strong></td>
-                    <td>Anonymous user authentication, subscription management</td>
-                    <td>Anonymous user ID, device identifier, authentication tokens (no email required)</td>
-                </tr>
-                <tr>
-                    <td><strong>Google Analytics for Firebase</strong></td>
-                    <td>Usage analytics</td>
-                    <td>Device info, usage patterns, anonymized data</td>
-                </tr>
-                <tr>
-                    <td><strong>Firebase Crashlytics</strong></td>
-                    <td>Crash reporting and diagnostics</td>
-                    <td>Device info, crash logs, stack traces</td>
+                    <td><strong>Firebase Auth</strong></td>
+                    <td>Anonymous authentication</td>
+                    <td>Anonymous user ID, tokens</td>
+                    <td><a href="https://firebase.google.com/support/privacy" target="_blank">Firebase Privacy ↗</a></td>
                 </tr>
                 <tr>
                     <td><strong>Apple CloudKit</strong></td>
-                    <td>Data sync across your devices</td>
-                    <td>All your app data (notes, voice recordings, settings)</td>
-                </tr>
-                <tr>
-                    <td><strong>Apple StoreKit</strong></td>
-                    <td>Subscription management</td>
-                    <td>Purchase history (handled by Apple, not accessible to us)</td>
+                    <td>Data sync across devices</td>
+                    <td>All your app data</td>
+                    <td><a href="https://www.apple.com/legal/privacy/" target="_blank">Apple Privacy ↗</a></td>
                 </tr>
             </table>
+        </div>
 
-            <h2>5. Data Storage and Security</h2>
+        <div class="doc-section">
+            <h2><span class="section-num">05</span> Data Storage & Security</h2>
 
             <h3>5.1 Where Your Data is Stored</h3>
             <ul>
                 <li><strong>Primary Storage:</strong> Apple CloudKit (iCloud servers, encrypted)</li>
                 <li><strong>Local Storage:</strong> On your iOS device (encrypted when device is locked)</li>
-                <li><strong>Backup:</strong> iCloud backup (if enabled in iOS settings)</li>
-                <li><strong>Firebase:</strong> Anonymous authentication tokens, usage statistics, analytics (Google Cloud)</li>
+                <li><strong>Firebase:</strong> Anonymous authentication tokens, usage statistics (Google Cloud)</li>
             </ul>
 
             <h3>5.2 Security Measures</h3>
-            <div class="success">
-                We implement industry-standard security practices to protect your data:
+            <div class="alert alert-success">
+                <strong>Industry-Standard Security</strong>
+                <p>All data transmitted uses TLS/SSL encryption. Your data in CloudKit is encrypted at rest. All API communications with AI services are authenticated and encrypted.</p>
             </div>
-            <ul>
-                <li><strong>Encryption in Transit:</strong> All data transmitted between your device and our servers uses TLS/SSL encryption</li>
-                <li><strong>Encryption at Rest:</strong> Your data in CloudKit is encrypted, and local device storage is protected by iOS encryption</li>
-                <li><strong>Secure APIs:</strong> All API communications with AI services are encrypted and authenticated</li>
-                <li><strong>Access Controls:</strong> Strict access controls limit who can access user data (only authorized personnel for support)</li>
-                <li><strong>Regular Audits:</strong> We conduct security reviews and update our practices regularly</li>
-                <li><strong>No Plain Text Storage:</strong> Sensitive data is never stored in plain text</li>
-            </ul>
 
             <h3>5.3 Data Retention</h3>
-            <table class="data-table">
+            <table class="doc-table">
                 <tr>
                     <th>Data Type</th>
                     <th>Retention Period</th>
@@ -444,37 +640,29 @@
                     <td>3 years (for legal compliance)</td>
                 </tr>
             </table>
+        </div>
 
-            <h2>6. Data Sharing and Disclosure</h2>
+        <div class="doc-section">
+            <h2><span class="section-num">06</span> Data Sharing & Disclosure</h2>
 
-            <h3>6.1 We DO NOT Sell Your Data</h3>
-            <div class="success">
-                <strong>✓ We never sell your personal information to third parties</strong><br>
-                <strong>✓ We never share your voice recordings with advertisers</strong><br>
-                <strong>✓ We never use your notes for marketing to others</strong>
+            <div class="alert alert-success">
+                <strong>✓ We Never Sell Your Data</strong>
+                <p>We never sell your personal information to third parties. We never share your voice recordings with advertisers. We never use your notes for marketing to others.</p>
             </div>
 
-            <h3>6.2 When We Share Data</h3>
+            <h3>6.1 When We Share Data</h3>
             <p>We only share your information in these limited circumstances:</p>
-
             <ul>
                 <li><strong>AI Processing:</strong> To Whisper and Claude APIs for transcription and text enhancement (necessary for core features)</li>
                 <li><strong>Service Providers:</strong> To Firebase, CloudKit, and other infrastructure providers (under strict data processing agreements)</li>
                 <li><strong>Legal Requirements:</strong> If required by law, court order, or government request</li>
                 <li><strong>Safety and Security:</strong> To prevent fraud, abuse, or protect user safety</li>
-                <li><strong>Business Transfers:</strong> In case of merger, acquisition, or sale of assets (users will be notified)</li>
                 <li><strong>With Your Consent:</strong> Any other sharing will require your explicit permission</li>
             </ul>
+        </div>
 
-            <h3>6.3 Aggregated and Anonymized Data</h3>
-            <p>We may share aggregated, anonymized data that cannot identify you individually, such as:</p>
-            <ul>
-                <li>Usage statistics (e.g., "70% of users use voice recording daily")</li>
-                <li>Performance metrics (e.g., "average transcription time: 3 seconds")</li>
-                <li>Feature adoption rates</li>
-            </ul>
-
-            <h2>7. Your Privacy Rights</h2>
+        <div class="doc-section">
+            <h2><span class="section-num">07</span> Your Privacy Rights</h2>
 
             <h3>7.1 Access and Control</h3>
             <p>You have the right to:</p>
@@ -484,154 +672,71 @@
                 <li><strong>Delete Your Data:</strong> Request deletion of your account and data</li>
                 <li><strong>Export Your Data:</strong> Download your notes and recordings</li>
                 <li><strong>Opt-Out:</strong> Unsubscribe from marketing emails</li>
-                <li><strong>Restrict Processing:</strong> Limit how we use your data</li>
             </ul>
 
-            <h3>7.2 How to Exercise Your Rights</h3>
-            <p>To access, correct, or delete your data:</p>
-            <ol>
-                <li><strong>In-App Settings:</strong> Most data management available in Settings > Privacy</li>
-                <li><strong>Email Request:</strong> Contact <a href="/cdn-cgi/l/email-protection" class="__cf_email__" data-cfemail="40333530302f3234002e2f3421256e213030">[email&#160;protected]</a> with your request</li>
-                <li><strong>Account Deletion:</strong> Settings > Account > Delete Account (permanent action)</li>
-            </ol>
-            <p><em>We will respond to requests within 30 days as required by law.</em></p>
+            <h3>7.2 GDPR Rights (European Users)</h3>
+            <ul>
+                <li>Right to access, rectification, erasure ("right to be forgotten")</li>
+                <li>Right to restrict processing and data portability</li>
+                <li>Right to object to processing and withdraw consent</li>
+            </ul>
 
-            <h3>7.3 California Privacy Rights (CCPA)</h3>
-            <p>If you are a California resident, you have additional rights under the California Consumer Privacy Act (CCPA):</p>
+            <h3>7.3 CCPA Rights (California Users)</h3>
             <ul>
                 <li>Right to know what personal information is collected</li>
-                <li>Right to know if personal information is sold or disclosed</li>
                 <li>Right to opt-out of sale of personal information (we don't sell data)</li>
                 <li>Right to delete personal information</li>
                 <li>Right to non-discrimination for exercising privacy rights</li>
             </ul>
+        </div>
 
-            <h3>7.4 European Privacy Rights (GDPR)</h3>
-            <p>If you are in the European Economic Area (EEA), you have rights under the General Data Protection Regulation (GDPR):</p>
-            <ul>
-                <li>Right to access your data</li>
-                <li>Right to rectification (correction)</li>
-                <li>Right to erasure ("right to be forgotten")</li>
-                <li>Right to restrict processing</li>
-                <li>Right to data portability</li>
-                <li>Right to object to processing</li>
-                <li>Right to withdraw consent</li>
-            </ul>
-
-            <h2>8. Children's Privacy</h2>
-
-            <h3>8.1 Age Restrictions</h3>
-            <div class="important">
-                <strong>The Application is NOT intended for children under 13 years of age.</strong>
+        <div class="doc-section">
+            <h2><span class="section-num">08</span> Children's Privacy</h2>
+            <div class="alert alert-danger">
+                <strong>Age Restriction</strong>
+                <p>The Application is NOT intended for children under 13 years of age. We do not knowingly collect personal information from children under 13.</p>
             </div>
-            <p>We do not knowingly collect personal information from children under 13. If we discover that a child under 13 has provided us with personal information, we will:</p>
-            <ul>
-                <li>Delete the information immediately</li>
-                <li>Terminate the account</li>
-                <li>Notify parents/guardians if contact information is available</li>
-            </ul>
+            <p>If you are a parent or guardian and believe your child has provided us with personal information, please contact us immediately at <a href="mailto:support@notaeapp.com">support@notaeapp.com</a>.</p>
+        </div>
 
-            <h3>8.2 Parental Notification</h3>
-            <p>If you are a parent or guardian and believe your child has provided us with personal information, please contact us immediately at <a href="/cdn-cgi/l/email-protection" class="__cf_email__" data-cfemail="34474144445b4640745a5b4055511a554444">[email&#160;protected]</a>. We will take prompt action to remove such information.</p>
+        <div class="doc-section">
+            <h2><span class="section-num">09</span> International Data Transfers</h2>
+            <p>Your data may be transferred to and processed in countries other than your country of residence, including the United States (Firebase, OpenAI, Anthropic servers) and worldwide Apple CloudKit servers (distributed globally).</p>
+            <p>We ensure appropriate safeguards are in place for international transfers, including Standard Contractual Clauses (SCCs) with service providers and adherence to GDPR requirements.</p>
+        </div>
 
-            <h2>9. International Data Transfers</h2>
-            <p>Your data may be transferred to and processed in countries other than your country of residence, including:</p>
-            <ul>
-                <li><strong>United States:</strong> Firebase, OpenAI, and Anthropic servers</li>
-                <li><strong>Worldwide:</strong> Apple CloudKit servers (distributed globally)</li>
-            </ul>
-            <p>We ensure appropriate safeguards are in place for international transfers, including:</p>
-            <ul>
-                <li>Standard Contractual Clauses (SCCs) with service providers</li>
-                <li>Compliance with Privacy Shield principles (where applicable)</li>
-                <li>Adherence to GDPR requirements for data transfers</li>
-            </ul>
+        <div class="doc-section">
+            <h2><span class="section-num">10</span> Data Breach Notification</h2>
+            <p>In the unlikely event of a data breach, we will investigate immediately, notify affected users within 72 hours (as required by GDPR), explain steps we're taking to prevent future breaches, and report to relevant data protection authorities if required by law.</p>
+        </div>
 
-            <h2>10. Cookies and Tracking Technologies</h2>
+        <div class="doc-section">
+            <h2><span class="section-num">11</span> Changes to This Policy</h2>
+            <p>We may update this Privacy Policy from time to time. For material changes, we will notify you by sending an email, displaying an in-app notification, and updating the "Last Updated" date at the top of this policy.</p>
+            <p>Your continued use of the Application after changes take effect constitutes acceptance of the updated policy.</p>
+        </div>
 
-            <h3>10.1 Mobile App Tracking</h3>
-            <p>The Application does not use traditional "cookies" but does use similar technologies:</p>
-            <ul>
-                <li><strong>Analytics SDKs:</strong> Firebase Analytics tracks usage patterns</li>
-                <li><strong>Device Identifiers:</strong> iOS Identifier for Vendors (IDFV) for analytics</li>
-                <li><strong>Local Storage:</strong> Stores app settings and data locally on your device</li>
-            </ul>
+        <div class="contact-box">
+            <h2>Privacy Contact</h2>
+            <p><strong>Website:</strong> <a href="https://notaeapp.com">https://notaeapp.com</a></p>
+            <p><strong>Email:</strong> <a href="mailto:support@notaeapp.com">support@notaeapp.com</a></p>
+            <p><strong>Privacy Officer:</strong> Denis Yaremenko</p>
+            <p style="margin-top: 16px; font-size: 0.85rem;">We aim to respond to privacy requests within 30 days.<br>For GDPR-specific requests, please mark your email "GDPR Request".</p>
+        </div>
 
-            <h3>10.2 iOS App Tracking Transparency (ATT)</h3>
-            <div class="success">
-                We respect iOS App Tracking Transparency. If you opt-out of tracking in iOS settings, we will not use your IDFA for advertising purposes. We only use analytics for app improvement, not for cross-app tracking.
+    </div>
+
+    <footer>
+        <div class="footer-inner">
+            <span class="footer-brand">Notae</span>
+            <div class="footer-links">
+                <a href="/privacy_policy.html">Privacy Policy</a>
+                <a href="/terms_of_use.html">Terms of Use</a>
+                <a href="mailto:support@notaeapp.com">Support</a>
             </div>
+            <span class="footer-copy">© 2026 Denis Yaremenko</span>
+        </div>
+    </footer>
 
-            <h2>11. Data Breach Notification</h2>
-            <p>In the unlikely event of a data breach that affects your personal information, we will:</p>
-            <ul>
-                <li>Investigate the incident immediately</li>
-                <li>Notify affected users within 72 hours (as required by GDPR)</li>
-                <li>Provide details about what data was affected</li>
-                <li>Explain steps we're taking to prevent future breaches</li>
-                <li>Offer guidance on protecting your account</li>
-                <li>Report to relevant data protection authorities if required by law</li>
-            </ul>
-
-            <h2>12. Third-Party Links</h2>
-            <p>The Application may contain links to third-party websites or services (e.g., OpenAI, Anthropic privacy policies). We are not responsible for the privacy practices of these third parties. We encourage you to review their privacy policies before providing any information.</p>
-
-            <h2>13. Business Transfers</h2>
-            <p>If Notae is involved in a merger, acquisition, or sale of assets, your personal information may be transferred to the new entity. We will:</p>
-            <ul>
-                <li>Notify you via email and/or prominent notice in the app</li>
-                <li>Provide at least 30 days' notice before transfer</li>
-                <li>Give you the option to delete your data before transfer</li>
-                <li>Ensure the new entity honors this Privacy Policy</li>
-            </ul>
-
-            <h2>14. Changes to This Privacy Policy</h2>
-            <p>We may update this Privacy Policy from time to time to reflect:</p>
-            <ul>
-                <li>Changes in our data practices</li>
-                <li>New features or services</li>
-                <li>Legal or regulatory requirements</li>
-                <li>User feedback and best practices</li>
-            </ul>
-
-            <h3>14.1 How We Notify You</h3>
-            <p>For material changes, we will notify you by:</p>
-            <ul>
-                <li>Sending an email to your registered email address</li>
-                <li>Displaying an in-app notification</li>
-                <li>Posting the updated policy on our website</li>
-                <li>Updating the "Last Updated" date at the top of this policy</li>
-            </ul>
-            <p>Your continued use of the Application after changes take effect constitutes acceptance of the updated policy. If you do not agree to changes, you must stop using the Application and delete your account.</p>
-
-            <h2>15. Your Consent</h2>
-            <p>By using the Notae Application, you consent to:</p>
-            <ul>
-                <li>The collection and use of information as described in this Privacy Policy</li>
-                <li>Processing of your voice recordings and text by AI services</li>
-                <li>Storage of your data in CloudKit and Firebase</li>
-                <li>International data transfers as described above</li>
-            </ul>
-            <p>You may withdraw your consent at any time by deleting your account, but this will prevent you from using the Application's services.</p>
-
-            <h2>16. Contact Information</h2>
-            <p>If you have questions, concerns, or requests regarding this Privacy Policy or our data practices, please contact us:</p>
-
-            <div class="contact-box">
-                <h2>📧 Privacy Contact</h2>
-                <p><strong>Website:</strong> <a href="https://notaeapp.com">https://notaeapp.com</a></p>
-                <p><strong>Email:</strong> <a href="/cdn-cgi/l/email-protection" class="__cf_email__" data-cfemail="acdfd9dcdcc3ded8ecc2c3d8cdc982cddcdc">[email&#160;protected]</a></p>
-                <p><strong>Privacy Officer:</strong> Denis Yaremenko</p>
-                <p><strong>Response Time:</strong> We aim to respond to privacy requests within 30 days</p>
-                <p style="margin-top: 20px;"><em>For GDPR-specific requests, please mark your email "GDPR Request"</em></p>
-            </div>
-
-            <h2>17. Data Protection Officer</h2>
-            <p>For European users, our Data Protection Officer can be reached at:</p>
-            <ul>
-                <li><strong>Email:</strong> <a href="/cdn-cgi/l/email-protection" class="__cf_email__" data-cfemail="294d59466947465d484c07485959">[email&#160;protected]</a></li>
-                <li><strong>Response Time:</strong> 30 days for GDPR requests</li>
-            </ul>
-
-            <h2>18. Supervisory Authority</h2>
-            <p>European users have the right to lodge a complaint with thei
+</body>
+</html>
