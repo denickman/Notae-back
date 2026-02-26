@@ -1,4 +1,4 @@
-const { onCall, HttpsError } = require('firebase-functions/v2/https');
+const { onCall, onRequest, HttpsError } = require('firebase-functions/v2/https');
 const { onSchedule } = require('firebase-functions/v2/scheduler');
 const admin = require('firebase-admin');
 const { defineSecret } = require('firebase-functions/params');
@@ -18,27 +18,264 @@ const appleIssuerId = defineSecret('APPLE_ISSUER_ID');
 const appleKeyId = defineSecret('APPLE_KEY_ID');
 const applePrivateKey = defineSecret('APPLE_PRIVATE_KEY');
 
-const FREE_VOICE_LIMIT = 7;
-const FREE_PHOTO_LIMIT = 3;
+const FREE_VOICE_LIMIT = 10;
+const FREE_PHOTO_LIMIT = 5;
+const PLUS_VOICE_LIMIT = 50;
+const PLUS_PHOTO_LIMIT = 25;
+
+/** Firestore: maps Apple `originalTransactionId` → Firebase Auth uid (for App Store Server Notifications). */
+const COLLECTION_APPLE_SUBSCRIPTIONS = 'appleSubscriptions';
+/** Firestore: idempotency for ASSN v2 `notificationUUID`. */
+const COLLECTION_ASSN_PROCESSED = 'assnProcessedNotifications';
+
+// ═══════════════════════════════════════════════════════
+// StoreKit / ASSN helpers
+// ═══════════════════════════════════════════════════════
+
+function parseStoreKitDate(value) {
+  if (value == null) return null;
+  if (typeof value === 'number') return new Date(value);
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+/**
+ * Whether the verified transaction payload represents an active (non-revoked, non-expired) subscription.
+ */
+function isProFromTransactionPayload(payload) {
+  if (payload.revocationDate != null) return false;
+  const exp = parseStoreKitDate(payload.expiresDate);
+  if (!exp) return false;
+  return exp > new Date();
+}
+
+/**
+ * Verify a StoreKit / App Store JWS (transaction or notification envelope) and return the payload object.
+ */
+async function verifyAppleSignedJWS(jwsToken) {
+  const decoded = jwt.decode(jwsToken, { complete: true });
+  if (!decoded?.header) {
+    throw new Error('Invalid JWS token');
+  }
+  const { kid, x5c } = decoded.header;
+  let publicKey;
+  if (x5c?.[0]) {
+    const cert = `-----BEGIN CERTIFICATE-----\n${x5c[0]}\n-----END CERTIFICATE-----`;
+    publicKey = await importX509(cert, 'ES256');
+  } else {
+    const appleKeys = await getApplePublicKeys();
+    const matchingKey = appleKeys.find((k) => k.kid === kid);
+    if (!matchingKey) {
+      throw new Error(`No matching Apple public key found for kid: ${kid || 'unknown'}`);
+    }
+    publicKey = await importJWK(matchingKey, 'ES256');
+  }
+  const { payload } = await jwtVerify(jwsToken, publicKey, {
+    algorithms: ['ES256'],
+  });
+  return payload;
+}
+
+async function saveAppleSubscriptionMapping(db, userId, transactionPayload) {
+  const oid = transactionPayload.originalTransactionId;
+  if (oid == null || oid === '') return;
+  const originalTransactionId = String(oid);
+  await db.collection(COLLECTION_APPLE_SUBSCRIPTIONS).doc(originalTransactionId).set(
+    {
+      firebaseUid: userId,
+      productId: transactionPayload.productId || null,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    },
+    { merge: true }
+  );
+}
+
+function buildUserSubscriptionFields(transactionPayload) {
+  const isActive = isProFromTransactionPayload(transactionPayload);
+  const expiresDate = parseStoreKitDate(transactionPayload.expiresDate);
+
+  let tier = 'free';
+  if (isActive) {
+    const productId = String(transactionPayload.productId || '');
+    if (productId.includes('plus')) {
+      tier = 'plus';
+    } else if (productId.includes('pro')) {
+      tier = 'pro';
+    }
+  }
+
+  const out = {
+    subscriptionTier: tier,
+    subscriptionProductId: transactionPayload.productId || null,
+    subscriptionVerifiedAt: admin.firestore.FieldValue.serverTimestamp(),
+  };
+  if (expiresDate) {
+    out.subscriptionExpiresAt = admin.firestore.Timestamp.fromDate(expiresDate);
+  }
+  if (transactionPayload.revocationDate != null) {
+    const rev = parseStoreKitDate(transactionPayload.revocationDate);
+    if (rev) {
+      out.subscriptionRevokedAt = admin.firestore.Timestamp.fromDate(rev);
+    }
+  }
+  return out;
+}
+
+async function applySubscriptionToUserDoc(userRef, transactionPayload) {
+  await userRef.set(buildUserSubscriptionFields(transactionPayload), { merge: true });
+}
+
+/**
+ * Handle App Store Server Notifications v2: outer `signedPayload` JWT → inner `signedTransactionInfo` JWS.
+ */
+async function handleAppStoreServerNotification(db, signedPayload) {
+  const outer = await verifyAppleSignedJWS(signedPayload);
+  const notificationUUID = outer.notificationUUID;
+  const notificationType = outer.notificationType;
+
+  if (notificationType === 'TEST') {
+    console.log('ASSN: TEST notification received, notificationUUID=', notificationUUID);
+    return;
+  }
+
+  if (!notificationUUID) {
+    console.warn('ASSN: missing notificationUUID');
+    return;
+  }
+
+  const processedRef = db.collection(COLLECTION_ASSN_PROCESSED).doc(notificationUUID);
+  const processedSnap = await processedRef.get();
+  if (processedSnap.exists) {
+    console.log('ASSN: duplicate notificationUUID, skip:', notificationUUID);
+    return;
+  }
+
+  const data = outer.data;
+  if (!data || !data.signedTransactionInfo) {
+    console.warn('ASSN: no data.signedTransactionInfo, type=', notificationType);
+    await processedRef.set({
+      notificationType: notificationType || 'UNKNOWN',
+      processedAt: admin.firestore.FieldValue.serverTimestamp(),
+      skipped: true,
+    });
+    return;
+  }
+
+  const txPayload = await verifyAppleSignedJWS(data.signedTransactionInfo);
+  const originalTransactionId = txPayload.originalTransactionId != null
+    ? String(txPayload.originalTransactionId)
+    : null;
+
+  if (!originalTransactionId) {
+    console.warn('ASSN: missing originalTransactionId');
+    await processedRef.set({
+      notificationType,
+      processedAt: admin.firestore.FieldValue.serverTimestamp(),
+      skipped: true,
+    });
+    return;
+  }
+
+  const mappingRef = db.collection(COLLECTION_APPLE_SUBSCRIPTIONS).doc(originalTransactionId);
+  const mappingSnap = await mappingRef.get();
+  if (!mappingSnap.exists) {
+    console.warn(
+      'ASSN: no firebaseUid mapping for originalTransactionId=',
+      originalTransactionId,
+      '(user must call verifySubscription once)'
+    );
+    await processedRef.set({
+      notificationType,
+      processedAt: admin.firestore.FieldValue.serverTimestamp(),
+      skipped: true,
+      reason: 'no_mapping',
+    });
+    return;
+  }
+
+  const firebaseUid = mappingSnap.data().firebaseUid;
+  if (!firebaseUid) {
+    console.warn('ASSN: mapping exists but firebaseUid empty');
+    await processedRef.set({
+      notificationType,
+      processedAt: admin.firestore.FieldValue.serverTimestamp(),
+      skipped: true,
+    });
+    return;
+  }
+
+  const userRef = db.collection('users').doc(firebaseUid);
+  const userSnap = await userRef.get();
+  if (!userSnap.exists) {
+    console.warn('ASSN: user doc missing for uid=', firebaseUid);
+  }
+
+  await applySubscriptionToUserDoc(userRef, txPayload);
+
+  await processedRef.set({
+    notificationType,
+    subtype: outer.subtype || null,
+    environment: data.environment || null,
+    originalTransactionId,
+    firebaseUid,
+    processedAt: admin.firestore.FieldValue.serverTimestamp(),
+  });
+
+  console.log('ASSN: processed', notificationType, notificationUUID, 'uid=', firebaseUid);
+}
 
 const getMonthKey = () => new Date().toISOString().slice(0, 7); // UTC YYYY-MM
+
+async function ensureUserDocument(db, userId, deviceID) {
+  const userRef = db.collection('users').doc(userId);
+  const userDoc = await userRef.get();
+  if (!userDoc.exists) {
+    const monthKey = getMonthKey();
+    await userRef.set({
+      deviceID: deviceID,
+      voiceActionsUsed: 0,
+      voiceActionsLimit: FREE_VOICE_LIMIT,
+      voiceActionsDayKey: monthKey,
+      photoScansUsed: 0,
+      photoScansLimit: FREE_PHOTO_LIMIT,
+      photoScansDayKey: monthKey,
+      lifetimeAPIRequests: 0,
+      monthlyTokens: 0,
+      subscriptionTier: 'free',
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+  }
+  const doc = await userRef.get();
+  return doc.data() || {
+    voiceActionsUsed: 0,
+    voiceActionsLimit: FREE_VOICE_LIMIT,
+    voiceActionsDayKey: getMonthKey(),
+    photoScansUsed: 0,
+    photoScansLimit: FREE_PHOTO_LIMIT,
+    photoScansDayKey: getMonthKey(),
+    lifetimeAPIRequests: 0,
+    monthlyTokens: 0,
+    subscriptionTier: 'free',
+  };
+}
 
 async function ensureMonthlyVoiceReset(userRef, userData) {
   const monthKey = getMonthKey();
   const tier = userData.subscriptionTier || 'free';
-  const needsLimitFix = tier !== 'pro' && (userData.voiceActionsLimit || FREE_VOICE_LIMIT) !== FREE_VOICE_LIMIT;
+  const expectedLimit = tier === 'plus' ? PLUS_VOICE_LIMIT : FREE_VOICE_LIMIT;
+  const needsLimitFix = tier !== 'pro' && (userData.voiceActionsLimit || expectedLimit) !== expectedLimit;
   const needsReset = tier !== 'pro' && userData.voiceActionsDayKey !== monthKey;
 
   if (needsReset || needsLimitFix) {
     await userRef.update({
       voiceActionsUsed: needsReset ? 0 : (userData.voiceActionsUsed || 0),
       voiceActionsDayKey: monthKey,
-      ...(needsLimitFix ? { voiceActionsLimit: FREE_VOICE_LIMIT } : {}),
+      ...(needsLimitFix ? { voiceActionsLimit: expectedLimit } : {}),
     });
     userData.voiceActionsUsed = needsReset ? 0 : (userData.voiceActionsUsed || 0);
     userData.voiceActionsDayKey = monthKey;
     if (needsLimitFix) {
-      userData.voiceActionsLimit = FREE_VOICE_LIMIT;
+      userData.voiceActionsLimit = expectedLimit;
     }
   }
 
@@ -48,19 +285,20 @@ async function ensureMonthlyVoiceReset(userRef, userData) {
 async function ensureMonthlyPhotoReset(userRef, userData) {
   const monthKey = getMonthKey();
   const tier = userData.subscriptionTier || 'free';
-  const needsLimitFix = tier !== 'pro' && (userData.photoScansLimit || FREE_PHOTO_LIMIT) !== FREE_PHOTO_LIMIT;
+  const expectedLimit = tier === 'plus' ? PLUS_PHOTO_LIMIT : FREE_PHOTO_LIMIT;
+  const needsLimitFix = tier !== 'pro' && (userData.photoScansLimit || expectedLimit) !== expectedLimit;
   const needsReset = tier !== 'pro' && userData.photoScansDayKey !== monthKey;
 
   if (needsReset || needsLimitFix) {
     await userRef.update({
       photoScansUsed: needsReset ? 0 : (userData.photoScansUsed || 0),
       photoScansDayKey: monthKey,
-      ...(needsLimitFix ? { photoScansLimit: FREE_PHOTO_LIMIT } : {}),
+      ...(needsLimitFix ? { photoScansLimit: expectedLimit } : {}),
     });
     userData.photoScansUsed = needsReset ? 0 : (userData.photoScansUsed || 0);
     userData.photoScansDayKey = monthKey;
     if (needsLimitFix) {
-      userData.photoScansLimit = FREE_PHOTO_LIMIT;
+      userData.photoScansLimit = expectedLimit;
     }
   }
 
@@ -119,40 +357,17 @@ exports.callClaudeVision = onCall(
       const deviceID = request.data.deviceID || 'unknown';
       console.log('📱 Device ID:', deviceID.substring(0, 8) + '...');
       
-      // Rate limiting
       const db = admin.firestore();
       const userRef = db.collection('users').doc(userId);
-      const userDoc = await userRef.get();
-
-      if (!userDoc.exists) {
-        console.log('📝 Creating new user document');
-        const monthKey = getMonthKey();
-        await userRef.set({
-          deviceID: deviceID,
-          photoScansUsed: 0,
-          photoScansLimit: FREE_PHOTO_LIMIT,
-          photoScansDayKey: monthKey,
-          voiceActionsUsed: 0,
-          voiceActionsLimit: FREE_VOICE_LIMIT,
-          voiceActionsDayKey: monthKey,
-          subscriptionTier: 'free',
-          createdAt: admin.firestore.FieldValue.serverTimestamp(),
-        });
-      }
-
-      let userData = userDoc.data() || {
-        photoScansUsed: 0,
-        photoScansLimit: FREE_PHOTO_LIMIT,
-        photoScansDayKey: getMonthKey(),
-        voiceActionsUsed: 0,
-        voiceActionsLimit: FREE_VOICE_LIMIT,
-        voiceActionsDayKey: getMonthKey(),
-        subscriptionTier: 'free'
-      };
-
+      let userData = await ensureUserDocument(db, userId, deviceID);
       userData = await ensureMonthlyPhotoReset(userRef, userData);
       
-      const photoScansLimit = userData.subscriptionTier === 'pro' ? 999999 : (userData.photoScansLimit || 3);
+      const photoScansLimit =
+        userData.subscriptionTier === 'pro'
+          ? 999999
+          : userData.subscriptionTier === 'plus'
+            ? PLUS_PHOTO_LIMIT
+            : userData.photoScansLimit || FREE_PHOTO_LIMIT;
       const photoScansUsed = userData.photoScansUsed || 0;
 
       console.log('📊 User data:', {
@@ -162,8 +377,8 @@ exports.callClaudeVision = onCall(
         remainingScans: photoScansLimit - photoScansUsed,
       });
 
-      // Check limit
-      if (photoScansUsed >= photoScansLimit && userData.subscriptionTier === 'free') {
+      // Check limit (non-Pro tiers: free + plus capped monthly)
+      if (photoScansUsed >= photoScansLimit && userData.subscriptionTier !== 'pro') {
         console.error('❌ Photo scans limit exceeded');
         throw new HttpsError(
           'resource-exhausted',
@@ -213,22 +428,21 @@ exports.callClaudeVision = onCall(
             body: JSON.stringify({
               model,
               max_tokens: 4096,
+              system: [{
+                type: 'text',
+                text: systemPrompt,
+                cache_control: { type: 'ephemeral' }
+              }],
               messages: [{
                 role: 'user',
-                content: [
-                  {
-                    type: 'image',
-                    source: {
-                      type: 'base64',
-                      media_type: mediaType,
-                      data: imageBase64
-                    }
-                  },
-                  {
-                    type: 'text',
-                    text: systemPrompt
+                content: [{
+                  type: 'image',
+                  source: {
+                    type: 'base64',
+                    media_type: mediaType,
+                    data: imageBase64
                   }
-                ]
+                }]
               }]
             }),
           });
@@ -469,6 +683,7 @@ exports.callWhisperProxy = onCall(
   },
   async (request) => {
     console.log('🎙️ === WHISPER PROXY CALLED ===');
+    console.log('[callWhisperProxy] userId:', request.auth?.uid, 'language:', request.data?.language, 'audioData length:', request.data?.audioData?.length ?? 0);
     
     if (!request.auth) {
       console.error('❌ No authentication');
@@ -497,34 +712,28 @@ exports.callWhisperProxy = onCall(
       const deviceID = request.data.deviceID || 'unknown';
       const db = admin.firestore();
       const userRef = db.collection('users').doc(userId);
-      const userDoc = await userRef.get();
-      
-      if (!userDoc.exists) {
-        const monthKey = getMonthKey();
-        await userRef.set({
-          deviceID: deviceID,
-          voiceActionsUsed: 0,
-          voiceActionsLimit: FREE_VOICE_LIMIT,
-          voiceActionsDayKey: monthKey,
-          photoScansUsed: 0,
-          photoScansLimit: FREE_PHOTO_LIMIT,
-          photoScansDayKey: monthKey,
-          subscriptionTier: 'free',
-          createdAt: admin.firestore.FieldValue.serverTimestamp(),
-        });
-      }
-      
-      let userData = userDoc.data() || {
-        voiceActionsUsed: 0,
-        voiceActionsLimit: FREE_VOICE_LIMIT,
-        voiceActionsDayKey: getMonthKey(),
-        subscriptionTier: 'free'
-      };
-
+      let userData = await ensureUserDocument(db, userId, deviceID);
       userData = await ensureMonthlyVoiceReset(userRef, userData);
 
-      const voiceActionsLimit = userData.subscriptionTier === 'pro' ? 999999 : (userData.voiceActionsLimit || FREE_VOICE_LIMIT);
+      const voiceActionsLimit =
+        userData.subscriptionTier === 'pro'
+          ? 999999
+          : userData.subscriptionTier === 'plus'
+            ? PLUS_VOICE_LIMIT
+            : userData.voiceActionsLimit || FREE_VOICE_LIMIT;
       const voiceActionsUsed = userData.voiceActionsUsed || 0;
+
+      if (voiceActionsUsed >= voiceActionsLimit && userData.subscriptionTier !== 'pro') {
+        throw new HttpsError(
+          'resource-exhausted',
+          `VOICE_ACTIONS_LIMIT_REACHED:${voiceActionsLimit}:${userData.subscriptionTier}`,
+          {
+            limit: voiceActionsLimit,
+            used: voiceActionsUsed,
+            tier: userData.subscriptionTier,
+          }
+        );
+      }
 
       const apiKey = openaiApiKey.value();
       if (!apiKey) {
@@ -538,11 +747,14 @@ exports.callWhisperProxy = onCall(
       });
       form.append('model', 'whisper-1');
       
+      // Whisper expects ISO-639-1 (e.g. "en"), not locale (e.g. "en-US") — 400 Bad Request otherwise
       if (language && language !== 'auto') {
-        form.append('language', language);
+        const iso6391 = language.split('-')[0].toLowerCase();
+        form.append('language', iso6391);
       }
 
       const apiStartTime = Date.now();
+      console.log('[callWhisperProxy] Calling OpenAI Whisper API, audio size:', audioSizeMB.toFixed(2), 'MB');
       const response = await axios.post(
         'https://api.openai.com/v1/audio/transcriptions',
         form,
@@ -557,6 +769,7 @@ exports.callWhisperProxy = onCall(
       );
 
       const apiDuration = Date.now() - apiStartTime;
+      console.log('[callWhisperProxy] OpenAI response OK, duration:', apiDuration, 'ms');
       const result = response.data;
       
       const estimatedDurationMinutes = audioSizeMB / 2;
@@ -588,6 +801,13 @@ exports.callWhisperProxy = onCall(
       };
 
     } catch (error) {
+      console.error('[callWhisperProxy] ERROR:', error.message);
+      console.error('[callWhisperProxy] Stack:', error.stack);
+      if (error.response) {
+        console.error('[callWhisperProxy] API response status:', error.response.status);
+        console.error('[callWhisperProxy] API response data:', JSON.stringify(error.response.data || {}));
+      }
+      
       if (error instanceof HttpsError) {
         throw error;
       }
@@ -595,7 +815,7 @@ exports.callWhisperProxy = onCall(
       if (error.response) {
         throw new HttpsError(
           'internal',
-          `Whisper API error: ${error.response.status}`
+          `Whisper API error: ${error.response.status} - ${JSON.stringify(error.response.data || {})}`
         );
       }
       
@@ -618,42 +838,23 @@ exports.getUserUsage = onCall({region: 'us-central1'}, async (request) => {
   
   const db = admin.firestore();
   const userRef = db.collection('users').doc(userId);
-  const userDoc = await userRef.get();
-  let userData = userDoc.data();
-
-  if (!userData) {
-    const monthKey = getMonthKey();
-    await userRef.set({
-      deviceID: deviceID,
-      voiceActionsUsed: 0,
-      voiceActionsLimit: FREE_VOICE_LIMIT,
-      voiceActionsDayKey: monthKey,
-      photoScansUsed: 0,
-      photoScansLimit: FREE_PHOTO_LIMIT,
-      photoScansDayKey: monthKey,
-      lifetimeAPIRequests: 0,
-      monthlyTokens: 0,
-      subscriptionTier: 'free',
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
-    });
-    
-    userData = {
-      voiceActionsUsed: 0,
-      voiceActionsLimit: FREE_VOICE_LIMIT,
-      voiceActionsDayKey: monthKey,
-      photoScansUsed: 0,
-      photoScansLimit: FREE_PHOTO_LIMIT,
-      photoScansDayKey: monthKey,
-      subscriptionTier: 'free',
-    };
-  }
-
+  let userData = await ensureUserDocument(db, userId, deviceID);
   userData = await ensureMonthlyVoiceReset(userRef, userData);
   userData = await ensureMonthlyPhotoReset(userRef, userData);
 
-  const voiceActionsLimit = userData.subscriptionTier === 'pro' ? 999999 : (userData.voiceActionsLimit || FREE_VOICE_LIMIT);
-  const photoScansLimit = userData.subscriptionTier === 'pro' ? 999999 : (userData.photoScansLimit || FREE_PHOTO_LIMIT);
-  
+  const voiceActionsLimit =
+    userData.subscriptionTier === 'pro'
+      ? 999999
+      : userData.subscriptionTier === 'plus'
+        ? PLUS_VOICE_LIMIT
+        : userData.voiceActionsLimit || FREE_VOICE_LIMIT;
+  const photoScansLimit =
+    userData.subscriptionTier === 'pro'
+      ? 999999
+      : userData.subscriptionTier === 'plus'
+        ? PLUS_PHOTO_LIMIT
+        : userData.photoScansLimit || FREE_PHOTO_LIMIT;
+
   const voiceActionsUsed = userData.voiceActionsUsed || 0;
   const photoScansUsed = userData.photoScansUsed || 0;
 
@@ -702,53 +903,60 @@ exports.verifySubscription = onCall(
     }
 
     try {
-      const decoded = jwt.decode(jwsToken, { complete: true });
-      if (!decoded?.header) {
-        throw new Error('Invalid JWS token');
-      }
-
-      const { kid, x5c } = decoded.header;
-      let publicKey;
-
-      if (kid === 'Apple_Xcode_Key') {
-        if (!x5c?.[0]) {
-          throw new Error('Missing x5c certificate');
-        }
-        const cert = `-----BEGIN CERTIFICATE-----\n${x5c[0]}\n-----END CERTIFICATE-----`;
-        publicKey = await importX509(cert, 'ES256');
-      } else {
-        const appleKeys = await getApplePublicKeys();
-        const matchingKey = appleKeys.find(k => k.kid === kid);
-        if (!matchingKey) {
-          throw new Error(`No matching Apple public key found`);
-        }
-        publicKey = await importJWK(matchingKey, 'ES256');
-      }
-
-      const { payload } = await jwtVerify(jwsToken, publicKey, {
-        algorithms: ['ES256'],
-      });
-
-      const expiresDate = new Date(payload.expiresDate);
-      const isActive = expiresDate > new Date();
-
+      const payload = await verifyAppleSignedJWS(jwsToken);
       const db = admin.firestore();
-      await db.collection('users').doc(userId).update({
-        subscriptionTier: isActive ? 'pro' : 'free',
-        subscriptionExpiresAt: admin.firestore.Timestamp.fromDate(expiresDate),
-        subscriptionProductId: payload.productId,
-        subscriptionVerifiedAt: admin.firestore.FieldValue.serverTimestamp(),
-      });
+      const userRef = db.collection('users').doc(userId);
+
+      await applySubscriptionToUserDoc(userRef, payload);
+      await saveAppleSubscriptionMapping(db, userId, payload);
+
+      const isActive = isProFromTransactionPayload(payload);
+      const expiresDate = parseStoreKitDate(payload.expiresDate);
+      let subscriptionTierResolved = 'free';
+      if (isActive) {
+        const pid = String(payload.productId || '');
+        if (pid.includes('plus')) subscriptionTierResolved = 'plus';
+        else if (pid.includes('pro')) subscriptionTierResolved = 'pro';
+      }
 
       return {
         success: true,
         isActive,
-        expiresAt: expiresDate.toISOString(),
-        subscriptionTier: isActive ? 'pro' : 'free',
+        expiresAt: expiresDate ? expiresDate.toISOString() : null,
+        subscriptionTier: subscriptionTierResolved,
       };
     } catch (err) {
       console.error('💥 VERIFY ERROR:', err.message);
       throw new HttpsError('internal', err.message);
+    }
+  }
+);
+
+/** App Store Server Notifications v2 — POST JSON `{ signedPayload }`. Apple retries on non-2xx. */
+exports.appStoreServerNotifications = onRequest(
+  {
+    region: 'us-central1',
+    timeoutSeconds: 60,
+    invoker: 'public',
+    secrets: [appleIssuerId, appleKeyId, applePrivateKey],
+  },
+  async (req, res) => {
+    if (req.method !== 'POST') {
+      res.status(405).send('Method Not Allowed');
+      return;
+    }
+    try {
+      const signedPayload = req.body?.signedPayload;
+      if (!signedPayload || typeof signedPayload !== 'string') {
+        res.status(400).json({ error: 'signedPayload required' });
+        return;
+      }
+      const db = admin.firestore();
+      await handleAppStoreServerNotification(db, signedPayload);
+      res.status(200).send('OK');
+    } catch (err) {
+      console.error('ASSN handler error:', err);
+      res.status(500).json({ error: 'Internal error' });
     }
   }
 );
