@@ -769,10 +769,13 @@
         .footer-inner {
             max-width: 1100px;
             margin: 0 auto;
-            display: flex;
+            display: grid;
+            grid-template-columns: 1fr auto 1fr;
             align-items: center;
-            justify-content: space-between;
-            flex-wrap: gap;
+        }
+
+        .footer-copy {
+            text-align: right;
         }
 
         .footer-brand {
@@ -1022,7 +1025,7 @@
                 <div class="price-card featured">
                     <div class="price-badge">Most Popular</div>
                     <div class="price-plan">Pro</div>
-                    <div class="price-amount">$4.99</div>
+                    <div class="price-amount">$6.99</div>
                     <div class="price-period">per month · cancel anytime</div>
                     <ul class="price-features">
                         <li><span class="check">✓</span> Everything in Free</li>
@@ -1058,13 +1061,13 @@
             <div class="footer-links">
                 <a href="/privacy_policy.html">Privacy Policy</a>
                 <a href="/terms_of_use.html">Terms of Use</a>
-                <a href="mailto:support@notaeapp.com">Support</a>
+                <a href="/cdn-cgi/l/email-protection#15666065657a6761557b7a6174707465653b767a78">Support</a>
             </div>
             <span class="footer-copy">© 2026 Denis Yaremenko</span>
         </div>
     </footer>
 
-    <script>
+    <script data-cfasync="false" src="/cdn-cgi/scripts/5c5dd728/cloudflare-static/email-decode.min.js"></script><script>
         // Waveform animation
         const barsContainer = document.getElementById('waveBars');
         const barCount = 32;
@@ -1090,9 +1093,4 @@
         document.querySelectorAll('.feat-card, .step, .price-card').forEach(el => {
             el.style.opacity = '0';
             el.style.transform = 'translateY(24px)';
-            el.style.transition = 'opacity 0.6s ease, transform 0.6s ease';
-            observer.observe(el);
-        });
-    </script>
-</body>
-</html>
+ 
