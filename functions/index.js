@@ -1,4 +1,4 @@
-const { onCall, HttpsError } = require('firebase-functions/v2/https');
+const { onCall, onRequest, HttpsError } = require('firebase-functions/v2/https');
 const { onSchedule } = require('firebase-functions/v2/scheduler');
 const admin = require('firebase-admin');
 const { defineSecret } = require('firebase-functions/params');
@@ -18,27 +18,598 @@ const appleIssuerId = defineSecret('APPLE_ISSUER_ID');
 const appleKeyId = defineSecret('APPLE_KEY_ID');
 const applePrivateKey = defineSecret('APPLE_PRIVATE_KEY');
 
-const FREE_VOICE_LIMIT = 7;
-const FREE_PHOTO_LIMIT = 3;
+const FREE_VOICE_LIMIT = 10;
+const FREE_PHOTO_LIMIT = 5;
+const PLUS_VOICE_LIMIT = 50;
+const PLUS_PHOTO_LIMIT = 25;
+const PRO_VOICE_LIMIT = 300;
+const PRO_PHOTO_LIMIT = 150;
+
+const CLEANUP_FREE_USER_DAYS = 45;
+const CLEANUP_BATCH_SIZE = 250;
+const CLEANUP_MAX_PAGES = 8;
+
+/** Only these product ids may override JWS ``productId`` in ``verifySubscription`` (client deferred-upgrade hint). */
+const KNOWN_VERIFY_TARGET_PRODUCT_IDS = new Set([
+  'com.notae.pro.monthly',
+  'com.notae.pro.annual',
+  'com.notae.plus.annual',
+]);
+
+/** Firestore: maps Apple `originalTransactionId` → Firebase Auth uid (for App Store Server Notifications). */
+const COLLECTION_APPLE_SUBSCRIPTIONS = 'appleSubscriptions';
+/** Firestore: idempotency for ASSN v2 `notificationUUID`. */
+const COLLECTION_ASSN_PROCESSED = 'assnProcessedNotifications';
+
+// ═══════════════════════════════════════════════════════
+// StoreKit / ASSN helpers
+// ═══════════════════════════════════════════════════════
+
+function parseStoreKitDate(value) {
+  if (value == null) return null;
+  if (typeof value?.toDate === 'function') {
+    return value.toDate();
+  }
+  if (typeof value === 'number') return new Date(value);
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+/**
+ * Whether the verified transaction payload represents an active (non-revoked, non-expired) subscription.
+ */
+function isProFromTransactionPayload(payload) {
+  if (payload.revocationDate != null) return false;
+  const exp = parseStoreKitDate(payload.expiresDate);
+  if (!exp) return false;
+  return exp > new Date();
+}
+
+/**
+ * Verify a StoreKit / App Store JWS (transaction or notification envelope) and return the payload object.
+ */
+async function verifyAppleSignedJWS(jwsToken) {
+  const decoded = jwt.decode(jwsToken, { complete: true });
+  if (!decoded?.header) {
+    throw new Error('Invalid JWS token');
+  }
+  const { kid, x5c } = decoded.header;
+  let publicKey;
+  if (x5c?.[0]) {
+    const cert = `-----BEGIN CERTIFICATE-----\n${x5c[0]}\n-----END CERTIFICATE-----`;
+    publicKey = await importX509(cert, 'ES256');
+  } else {
+    const appleKeys = await getApplePublicKeys();
+    const matchingKey = appleKeys.find((k) => k.kid === kid);
+    if (!matchingKey) {
+      throw new Error(`No matching Apple public key found for kid: ${kid || 'unknown'}`);
+    }
+    publicKey = await importJWK(matchingKey, 'ES256');
+  }
+  const { payload } = await jwtVerify(jwsToken, publicKey, {
+    algorithms: ['ES256'],
+  });
+  return payload;
+}
+
+async function saveAppleSubscriptionMapping(db, userId, transactionPayload) {
+  const oid = transactionPayload.originalTransactionId;
+  if (oid == null || oid === '') return;
+  const originalTransactionId = String(oid);
+  await db.collection(COLLECTION_APPLE_SUBSCRIPTIONS).doc(originalTransactionId).set(
+    {
+      firebaseUid: userId,
+      productId: transactionPayload.productId || null,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    },
+    { merge: true }
+  );
+}
+
+function buildUserSubscriptionFields(transactionPayload) {
+  const isActive = isProFromTransactionPayload(transactionPayload);
+  const expiresDate = parseStoreKitDate(transactionPayload.expiresDate);
+
+  let tier = 'free';
+  if (isActive) {
+    const productId = String(transactionPayload.productId || '');
+    if (productId.includes('plus')) {
+      tier = 'plus';
+    } else if (productId.includes('pro')) {
+      tier = 'pro';
+    }
+  }
+
+  const out = {
+    subscriptionTier: tier,
+    subscriptionProductId: transactionPayload.productId || null,
+    subscriptionVerifiedAt: admin.firestore.FieldValue.serverTimestamp(),
+  };
+  if (expiresDate) {
+    out.subscriptionExpiresAt = admin.firestore.Timestamp.fromDate(expiresDate);
+  }
+  if (transactionPayload.revocationDate != null) {
+    const rev = parseStoreKitDate(transactionPayload.revocationDate);
+    if (rev) {
+      out.subscriptionRevokedAt = admin.firestore.Timestamp.fromDate(rev);
+    }
+  }
+  return out;
+}
+
+async function applySubscriptionToUserDoc(userRef, transactionPayload) {
+  const fields = buildUserSubscriptionFields(transactionPayload);
+  const currentSnap = await userRef.get();
+  const currentTier = currentSnap.exists
+    ? String(currentSnap.data().subscriptionTier || 'free')
+    : 'free';
+  const newTier = String(fields.subscriptionTier || 'free');
+  const tierOrder = { free: 0, plus: 1, pro: 2 };
+  /** Reset usage limits when tier actually changes (upgrade, downgrade/correction, or free). */
+  const tierChanged = newTier !== currentTier;
+  if (tierChanged) {
+    fields.voiceActionsUsed = 0;
+    fields.photoScansUsed = 0;
+    const newVoiceLimit = newTier === 'pro'
+      ? PRO_VOICE_LIMIT
+      : (newTier === 'plus' ? PLUS_VOICE_LIMIT : FREE_VOICE_LIMIT);
+    const newPhotoLimit = newTier === 'pro'
+      ? PRO_PHOTO_LIMIT
+      : (newTier === 'plus' ? PLUS_PHOTO_LIMIT : FREE_PHOTO_LIMIT);
+    fields.voiceActionsLimit = newVoiceLimit;
+    fields.photoScansLimit = newPhotoLimit;
+  }
+  const pendingProductId = currentSnap.exists
+    ? String(currentSnap.data().pendingUpgradeProductId || '')
+    : '';
+  if (pendingProductId) {
+    const pendingTier = pendingProductId.includes('pro')
+      ? 'pro'
+      : (pendingProductId.includes('plus') ? 'plus' : 'free');
+    if ((tierOrder[newTier] || 0) >= (tierOrder[pendingTier] || 0)) {
+      fields.pendingUpgradeProductId = admin.firestore.FieldValue.delete();
+      fields.pendingUpgradeAt = admin.firestore.FieldValue.delete();
+    }
+  }
+  console.log(
+    `[SUB_TIER] uid=${userRef.id} ${currentTier} → ${newTier}, tierChanged=${tierChanged}`
+  );
+  console.log(
+    `[LIMITS] voice=${fields.voiceActionsLimit}, photo=${fields.photoScansLimit}`
+  );
+  await userRef.set(fields, { merge: true });
+}
+
+/**
+ * Handle App Store Server Notifications v2: outer `signedPayload` JWT → inner `signedTransactionInfo` JWS.
+ */
+async function handleAppStoreServerNotification(db, signedPayload) {
+  const outer = await verifyAppleSignedJWS(signedPayload);
+  const notificationUUID = outer.notificationUUID;
+  const notificationType = outer.notificationType;
+
+  if (notificationType === 'TEST') {
+    console.log('ASSN: TEST notification received, notificationUUID=', notificationUUID);
+    return;
+  }
+
+  if (!notificationUUID) {
+    console.warn('ASSN: missing notificationUUID');
+    return;
+  }
+
+  const processedRef = db.collection(COLLECTION_ASSN_PROCESSED).doc(notificationUUID);
+  const processedSnap = await processedRef.get();
+  if (processedSnap.exists) {
+    console.log('ASSN: duplicate notificationUUID, skip:', notificationUUID);
+    return;
+  }
+
+  const data = outer.data;
+  if (!data || !data.signedTransactionInfo) {
+    console.warn('ASSN: no data.signedTransactionInfo, type=', notificationType);
+    await processedRef.set({
+      notificationType: notificationType || 'UNKNOWN',
+      processedAt: admin.firestore.FieldValue.serverTimestamp(),
+      skipped: true,
+    });
+    return;
+  }
+
+  const txPayload = await verifyAppleSignedJWS(data.signedTransactionInfo);
+  const originalTransactionId = txPayload.originalTransactionId != null
+    ? String(txPayload.originalTransactionId)
+    : null;
+
+  if (!originalTransactionId) {
+    console.warn('ASSN: missing originalTransactionId');
+    await processedRef.set({
+      notificationType,
+      processedAt: admin.firestore.FieldValue.serverTimestamp(),
+      skipped: true,
+    });
+    return;
+  }
+
+  const mappingRef = db.collection(COLLECTION_APPLE_SUBSCRIPTIONS).doc(originalTransactionId);
+  const mappingSnap = await mappingRef.get();
+  if (!mappingSnap.exists) {
+    console.warn(
+      'ASSN: no firebaseUid mapping for originalTransactionId=',
+      originalTransactionId,
+      '(user must call verifySubscription once)'
+    );
+    await processedRef.set({
+      notificationType,
+      processedAt: admin.firestore.FieldValue.serverTimestamp(),
+      skipped: true,
+      reason: 'no_mapping',
+    });
+    return;
+  }
+
+  const firebaseUid = mappingSnap.data().firebaseUid;
+  if (!firebaseUid) {
+    console.warn('ASSN: mapping exists but firebaseUid empty');
+    await processedRef.set({
+      notificationType,
+      processedAt: admin.firestore.FieldValue.serverTimestamp(),
+      skipped: true,
+    });
+    return;
+  }
+
+  const userRef = db.collection('users').doc(firebaseUid);
+  const userSnap = await userRef.get();
+  if (!userSnap.exists) {
+    console.warn('ASSN: user doc missing for uid=', firebaseUid);
+  }
+
+  await applySubscriptionToUserDoc(userRef, txPayload);
+
+  await processedRef.set({
+    notificationType,
+    subtype: outer.subtype || null,
+    environment: data.environment || null,
+    originalTransactionId,
+    firebaseUid,
+    processedAt: admin.firestore.FieldValue.serverTimestamp(),
+  });
+
+  console.log('ASSN: processed', notificationType, notificationUUID, 'uid=', firebaseUid);
+}
 
 const getMonthKey = () => new Date().toISOString().slice(0, 7); // UTC YYYY-MM
+
+/** Expect SHA256 hex (64 chars) from iOS ``ICloudIdentityProvider`` — reject anything else. */
+function normalizeICloudId(raw) {
+  if (raw == null) return null;
+  const s = String(raw).trim().toLowerCase();
+  if (!s) return null;
+  if (!/^[a-f0-9]{64}$/.test(s)) {
+    console.warn('☁️ iCloudID ignored: invalid format');
+    return null;
+  }
+  return s;
+}
+
+const SUBSCRIPTION_TIER_ORDER = { free: 0, plus: 1, pro: 2 };
+
+function voiceLimitForTier(tier) {
+  if (tier === 'pro') return PRO_VOICE_LIMIT;
+  if (tier === 'plus') return PLUS_VOICE_LIMIT;
+  return FREE_VOICE_LIMIT;
+}
+
+function photoLimitForTier(tier) {
+  if (tier === 'pro') return PRO_PHOTO_LIMIT;
+  if (tier === 'plus') return PLUS_PHOTO_LIMIT;
+  return FREE_PHOTO_LIMIT;
+}
+
+function highestSubscriptionTier(tierA, tierB) {
+  const a = SUBSCRIPTION_TIER_ORDER[tierA] ?? 0;
+  const b = SUBSCRIPTION_TIER_ORDER[tierB] ?? 0;
+  return a >= b ? (tierA || 'free') : (tierB || 'free');
+}
+
+async function queryUserDocsByICloudID(db, iCloudID) {
+  if (!iCloudID) return [];
+  const snapshot = await db.collection('users').where('iCloudID', '==', iCloudID).get();
+  return snapshot.docs;
+}
+
+function sumUsageFieldAcrossDocs(docs, field) {
+  let total = 0;
+  docs.forEach((doc) => {
+    total += doc.data()[field] || 0;
+  });
+  return total;
+}
+
+function resolveEffectiveTierFromDocs(docs, fallbackTier = 'free') {
+  let best = fallbackTier || 'free';
+  docs.forEach((doc) => {
+    const t = doc.data().subscriptionTier || 'free';
+    best = highestSubscriptionTier(best, t);
+  });
+  return best;
+}
+
+function subscriptionFieldsForTierSync(peerData) {
+  const tier = peerData.subscriptionTier || 'free';
+  const fields = {
+    subscriptionTier: tier,
+    subscriptionProductId: peerData.subscriptionProductId ?? null,
+    subscriptionVerifiedAt: peerData.subscriptionVerifiedAt
+      ?? admin.firestore.FieldValue.serverTimestamp(),
+    voiceActionsLimit: voiceLimitForTier(tier),
+    photoScansLimit: photoLimitForTier(tier),
+  };
+  if (peerData.subscriptionExpiresAt !== undefined) {
+    fields.subscriptionExpiresAt = peerData.subscriptionExpiresAt;
+  }
+  if (peerData.subscriptionRevokedAt !== undefined) {
+    fields.subscriptionRevokedAt = peerData.subscriptionRevokedAt;
+  }
+  return fields;
+}
+
+/**
+ * Pull the highest paid tier from any users/* doc sharing this iCloudID onto the current uid.
+ * Best-effort; never throws.
+ */
+async function syncSubscriptionTierFromICloudPeers(db, userRef, userData, iCloudID) {
+  try {
+    const docs = await queryUserDocsByICloudID(db, iCloudID);
+    if (docs.length === 0) return userData;
+
+    const currentTier = userData.subscriptionTier || 'free';
+    let bestTier = currentTier;
+    let bestDocData = userData;
+
+    docs.forEach((doc) => {
+      const d = doc.data();
+      const t = d.subscriptionTier || 'free';
+      if ((SUBSCRIPTION_TIER_ORDER[t] ?? 0) > (SUBSCRIPTION_TIER_ORDER[bestTier] ?? 0)) {
+        bestTier = t;
+        bestDocData = d;
+      }
+    });
+
+    if ((SUBSCRIPTION_TIER_ORDER[bestTier] ?? 0) <= (SUBSCRIPTION_TIER_ORDER[currentTier] ?? 0)) {
+      return userData;
+    }
+
+    const updates = subscriptionFieldsForTierSync(bestDocData);
+    updates.subscriptionTierSyncedFromICloud = true;
+    updates.subscriptionTierSyncedAt = admin.firestore.FieldValue.serverTimestamp();
+    await userRef.set(updates, { merge: true });
+    console.log(
+      `☁️ Tier sync via iCloudID: ${currentTier} → ${bestTier} for uid=${userRef.id.substring(0, 8)}…`
+    );
+    return { ...userData, ...updates };
+  } catch (err) {
+    console.error(`☁️ syncSubscriptionTierFromICloudPeers failed: ${err.message}`);
+    return userData;
+  }
+}
+
+/**
+ * Aggregate usage across all users/* docs for an iCloudID (non-transactional; slight race acceptable).
+ */
+async function evaluateAggregatedUsageLimit(db, { iCloudID, usageField, userData, limitForTier }) {
+  const docs = iCloudID ? await queryUserDocsByICloudID(db, iCloudID) : [];
+  const effectiveTier = docs.length > 0
+    ? resolveEffectiveTierFromDocs(docs, userData.subscriptionTier || 'free')
+    : (userData.subscriptionTier || 'free');
+  const limit = limitForTier(effectiveTier);
+  const totalUsed = docs.length > 0
+    ? sumUsageFieldAcrossDocs(docs, usageField)
+    : (userData[usageField] || 0);
+
+  return {
+    canProceed: totalUsed < limit,
+    totalUsed,
+    limit,
+    tier: effectiveTier,
+  };
+}
+
+function resolveICloudIDForSession(requestICloudIDRaw, userData) {
+  return normalizeICloudId(requestICloudIDRaw) || normalizeICloudId(userData?.iCloudID);
+}
+
+function userDocHasMeaningfulUsage(data) {
+  const d = data || {};
+  const tier = String(d.subscriptionTier || 'free');
+  if (tier !== 'free') return true;
+  if (d.subscriptionProductId || d.subscriptionExpiresAt || d.subscriptionVerifiedAt) return true;
+  if (d.pendingUpgradeProductId || d.pendingUpgradeAt) return true;
+  if ((d.voiceActionsUsed || 0) > 0 || (d.photoScansUsed || 0) > 0) return true;
+  if ((d.lifetimeAPIRequests || 0) > 0 || (d.monthlyTokens || 0) > 0) return true;
+  return false;
+}
+
+async function repointAppleSubscriptionMappings(db, fromUid, toUid) {
+  if (!fromUid || !toUid || fromUid === toUid) return;
+  try {
+    const snap = await db.collection(COLLECTION_APPLE_SUBSCRIPTIONS)
+      .where('firebaseUid', '==', fromUid)
+      .get();
+    if (snap.empty) return;
+    const docs = snap.docs;
+    for (let i = 0; i < docs.length; i += 400) {
+      const batch = db.batch();
+      docs.slice(i, i + 400).forEach((doc) => {
+        batch.update(doc.ref, {
+          firebaseUid: toUid,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+      });
+      await batch.commit();
+    }
+    console.log(`☁️ appleSubscriptions repointed ${snap.size} mapping(s) ${fromUid.substring(0, 8)}… → ${toUid.substring(0, 8)}…`);
+  } catch (err) {
+    console.error(`☁️ repointAppleSubscriptionMappings failed: ${err.message}`);
+  }
+}
+
+/**
+ * Copy usage/subscription fields from a prior users/* doc sharing the same iCloudID.
+ * Best-effort; never throws to callers.
+ */
+async function migrateFromPreviousICloudSession(db, currentRef, currentUid, iCloudID) {
+  try {
+    const currentSnap = await currentRef.get();
+    const currentData = currentSnap.data() || {};
+    if (userDocHasMeaningfulUsage(currentData)) {
+      console.log('☁️ iCloud migration skip: current user already has meaningful data');
+      return;
+    }
+
+    const snapshot = await db.collection('users')
+      .where('iCloudID', '==', iCloudID)
+      .get();
+
+    const candidates = snapshot.docs.filter((doc) => doc.id !== currentUid);
+    if (candidates.length === 0) return;
+
+    const scored = candidates.map((doc) => {
+      const d = doc.data() || {};
+      const tier = d.subscriptionTier || 'free';
+      const tierScore = tier === 'pro' ? 30000 : tier === 'plus' ? 20000 : 0;
+      const usageScore =
+        (d.voiceActionsUsed || 0) + (d.photoScansUsed || 0) + (d.lifetimeAPIRequests || 0) + (d.monthlyTokens || 0);
+      return { doc, score: tierScore + usageScore, data: d };
+    });
+
+    scored.sort((a, b) => b.score - a.score);
+    const donor = scored[0];
+    if ((donor.score || 0) <= 0) {
+      return;
+    }
+
+    const keysToCopy = [
+      'subscriptionTier',
+      'subscriptionProductId',
+      'subscriptionExpiresAt',
+      'subscriptionRevokedAt',
+      'subscriptionVerifiedAt',
+      'pendingUpgradeProductId',
+      'pendingUpgradeAt',
+      'voiceActionsUsed',
+      'voiceActionsLimit',
+      'voiceActionsDayKey',
+      'photoScansUsed',
+      'photoScansLimit',
+      'photoScansDayKey',
+      'lifetimeAPIRequests',
+      'monthlyTokens',
+      'lastRequestAt',
+    ];
+
+    const payload = {};
+    for (const key of keysToCopy) {
+      if (donor.data[key] !== undefined) {
+        payload[key] = donor.data[key];
+      }
+    }
+    payload.migratedFromUid = donor.doc.id;
+    payload.migratedViaICloudID = true;
+    payload.migratedAt = admin.firestore.FieldValue.serverTimestamp();
+
+    await currentRef.set(payload, { merge: true });
+    await repointAppleSubscriptionMappings(db, donor.doc.id, currentUid);
+
+    console.log(
+      `☁️ iCloud migration: ${donor.doc.id.substring(0, 8)}… → ${currentUid.substring(0, 8)}… (tier=${donor.data.subscriptionTier || 'free'})`
+    );
+  } catch (err) {
+    console.error(`☁️ iCloud migration failed: ${err.message}`);
+  }
+}
+
+/**
+ * Ensures users/{userId} exists. When iCloudID is provided, links and may migrate from a prior uid.
+ */
+async function ensureUserDocument(db, userId, deviceID, iCloudIDRaw) {
+  const iCloudID = normalizeICloudId(iCloudIDRaw);
+  const userRef = db.collection('users').doc(userId);
+  const userDoc = await userRef.get();
+
+  if (!userDoc.exists) {
+    const monthKey = getMonthKey();
+    const newDocData = {
+      deviceID: deviceID,
+      voiceActionsUsed: 0,
+      voiceActionsLimit: FREE_VOICE_LIMIT,
+      voiceActionsDayKey: monthKey,
+      photoScansUsed: 0,
+      photoScansLimit: FREE_PHOTO_LIMIT,
+      photoScansDayKey: monthKey,
+      lifetimeAPIRequests: 0,
+      monthlyTokens: 0,
+      subscriptionTier: 'free',
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    };
+    if (iCloudID) {
+      newDocData.iCloudID = iCloudID;
+    }
+    await userRef.set(newDocData);
+    if (iCloudID) {
+      await migrateFromPreviousICloudSession(db, userRef, userId, iCloudID);
+    }
+  } else if (iCloudID) {
+    const existingData = userDoc.data() || {};
+    const updates = {};
+    if (!existingData.iCloudID) {
+      updates.iCloudID = iCloudID;
+    }
+    if (Object.keys(updates).length > 0) {
+      await userRef.update(updates);
+    }
+    if (!userDocHasMeaningfulUsage(existingData)) {
+      await migrateFromPreviousICloudSession(db, userRef, userId, iCloudID);
+    }
+  }
+
+  const doc = await userRef.get();
+  return doc.data() || {
+    voiceActionsUsed: 0,
+    voiceActionsLimit: FREE_VOICE_LIMIT,
+    voiceActionsDayKey: getMonthKey(),
+    photoScansUsed: 0,
+    photoScansLimit: FREE_PHOTO_LIMIT,
+    photoScansDayKey: getMonthKey(),
+    lifetimeAPIRequests: 0,
+    monthlyTokens: 0,
+    subscriptionTier: 'free',
+  };
+}
 
 async function ensureMonthlyVoiceReset(userRef, userData) {
   const monthKey = getMonthKey();
   const tier = userData.subscriptionTier || 'free';
-  const needsLimitFix = tier !== 'pro' && (userData.voiceActionsLimit || FREE_VOICE_LIMIT) !== FREE_VOICE_LIMIT;
-  const needsReset = tier !== 'pro' && userData.voiceActionsDayKey !== monthKey;
+  const expectedLimit =
+    tier === 'pro'
+      ? PRO_VOICE_LIMIT
+      : tier === 'plus'
+        ? PLUS_VOICE_LIMIT
+        : FREE_VOICE_LIMIT;
+  const needsLimitFix = (userData.voiceActionsLimit || expectedLimit) !== expectedLimit;
+  const needsReset = userData.voiceActionsDayKey !== monthKey;
 
   if (needsReset || needsLimitFix) {
     await userRef.update({
       voiceActionsUsed: needsReset ? 0 : (userData.voiceActionsUsed || 0),
       voiceActionsDayKey: monthKey,
-      ...(needsLimitFix ? { voiceActionsLimit: FREE_VOICE_LIMIT } : {}),
+      ...(needsLimitFix ? { voiceActionsLimit: expectedLimit } : {}),
     });
     userData.voiceActionsUsed = needsReset ? 0 : (userData.voiceActionsUsed || 0);
     userData.voiceActionsDayKey = monthKey;
     if (needsLimitFix) {
-      userData.voiceActionsLimit = FREE_VOICE_LIMIT;
+      userData.voiceActionsLimit = expectedLimit;
     }
   }
 
@@ -48,23 +619,50 @@ async function ensureMonthlyVoiceReset(userRef, userData) {
 async function ensureMonthlyPhotoReset(userRef, userData) {
   const monthKey = getMonthKey();
   const tier = userData.subscriptionTier || 'free';
-  const needsLimitFix = tier !== 'pro' && (userData.photoScansLimit || FREE_PHOTO_LIMIT) !== FREE_PHOTO_LIMIT;
-  const needsReset = tier !== 'pro' && userData.photoScansDayKey !== monthKey;
+  const expectedLimit =
+    tier === 'pro'
+      ? PRO_PHOTO_LIMIT
+      : tier === 'plus'
+        ? PLUS_PHOTO_LIMIT
+        : FREE_PHOTO_LIMIT;
+  const needsLimitFix = (userData.photoScansLimit || expectedLimit) !== expectedLimit;
+  const needsReset = userData.photoScansDayKey !== monthKey;
 
   if (needsReset || needsLimitFix) {
     await userRef.update({
       photoScansUsed: needsReset ? 0 : (userData.photoScansUsed || 0),
       photoScansDayKey: monthKey,
-      ...(needsLimitFix ? { photoScansLimit: FREE_PHOTO_LIMIT } : {}),
+      ...(needsLimitFix ? { photoScansLimit: expectedLimit } : {}),
     });
     userData.photoScansUsed = needsReset ? 0 : (userData.photoScansUsed || 0);
     userData.photoScansDayKey = monthKey;
     if (needsLimitFix) {
-      userData.photoScansLimit = FREE_PHOTO_LIMIT;
+      userData.photoScansLimit = expectedLimit;
     }
   }
 
   return userData;
+}
+
+function getUserLastActivity(data) {
+  const lastRequestAt = parseStoreKitDate(data.lastRequestAt);
+  if (lastRequestAt) return lastRequestAt;
+  const createdAt = parseStoreKitDate(data.createdAt);
+  return createdAt || null;
+}
+
+function isSafeToDeleteFreeUser(data, cutoffDate) {
+  const tier = String(data.subscriptionTier || 'free');
+  if (tier !== 'free') return false;
+  if (data.subscriptionProductId || data.subscriptionExpiresAt || data.subscriptionVerifiedAt) {
+    return false;
+  }
+  if (data.pendingUpgradeProductId || data.pendingUpgradeAt) {
+    return false;
+  }
+  const lastActivity = getUserLastActivity(data);
+  if (!lastActivity) return false;
+  return lastActivity < cutoffDate;
 }
 
 // ═══════════════════════════════════════════════════════
@@ -117,64 +715,60 @@ exports.callClaudeVision = onCall(
 
     try {
       const deviceID = request.data.deviceID || 'unknown';
+      const iCloudID = request.data.iCloudID || null;
       console.log('📱 Device ID:', deviceID.substring(0, 8) + '...');
       
-      // Rate limiting
       const db = admin.firestore();
       const userRef = db.collection('users').doc(userId);
-      const userDoc = await userRef.get();
-
-      if (!userDoc.exists) {
-        console.log('📝 Creating new user document');
-        const monthKey = getMonthKey();
-        await userRef.set({
-          deviceID: deviceID,
-          photoScansUsed: 0,
-          photoScansLimit: FREE_PHOTO_LIMIT,
-          photoScansDayKey: monthKey,
-          voiceActionsUsed: 0,
-          voiceActionsLimit: FREE_VOICE_LIMIT,
-          voiceActionsDayKey: monthKey,
-          subscriptionTier: 'free',
-          createdAt: admin.firestore.FieldValue.serverTimestamp(),
-        });
-      }
-
-      let userData = userDoc.data() || {
-        photoScansUsed: 0,
-        photoScansLimit: FREE_PHOTO_LIMIT,
-        photoScansDayKey: getMonthKey(),
-        voiceActionsUsed: 0,
-        voiceActionsLimit: FREE_VOICE_LIMIT,
-        voiceActionsDayKey: getMonthKey(),
-        subscriptionTier: 'free'
-      };
-
+      let userData = await ensureUserDocument(db, userId, deviceID, iCloudID);
       userData = await ensureMonthlyPhotoReset(userRef, userData);
-      
-      const photoScansLimit = userData.subscriptionTier === 'pro' ? 999999 : (userData.photoScansLimit || 3);
-      const photoScansUsed = userData.photoScansUsed || 0;
 
-      console.log('📊 User data:', {
-        subscriptionTier: userData.subscriptionTier,
-        photoScansUsed,
-        photoScansLimit,
-        remainingScans: photoScansLimit - photoScansUsed,
+      const sessionICloudID = resolveICloudIDForSession(iCloudID, userData);
+      const aggregateCheck = await evaluateAggregatedUsageLimit(db, {
+        iCloudID: sessionICloudID,
+        usageField: 'photoScansUsed',
+        userData,
+        limitForTier: photoLimitForTier,
       });
 
-      // Check limit
-      if (photoScansUsed >= photoScansLimit && userData.subscriptionTier === 'free') {
-        console.error('❌ Photo scans limit exceeded');
+      if (!aggregateCheck.canProceed) {
+        console.error('❌ Photo scans limit exceeded (iCloud aggregate)');
         throw new HttpsError(
           'resource-exhausted',
-          `PHOTO_SCANS_LIMIT_REACHED:${photoScansLimit}:${userData.subscriptionTier}`,
+          `PHOTO_SCANS_LIMIT_REACHED:${aggregateCheck.limit}:${aggregateCheck.tier}`,
           {
-            limit: photoScansLimit,
-            used: photoScansUsed,
-            tier: userData.subscriptionTier,
+            limit: aggregateCheck.limit,
+            used: aggregateCheck.totalUsed,
+            tier: aggregateCheck.tier,
           }
         );
       }
+
+      const reservation = await db.runTransaction(async (transaction) => {
+        const snapshot = await transaction.get(userRef);
+        const data = snapshot.data() || {};
+        const used = data.photoScansUsed || 0;
+
+        transaction.update(userRef, {
+          photoScansUsed: used + 1,
+        });
+
+        return {
+          canProceed: true,
+          usedAfter: used + 1,
+          aggregateUsedAfter: aggregateCheck.totalUsed + 1,
+          limit: aggregateCheck.limit,
+          tier: aggregateCheck.tier,
+        };
+      });
+
+      console.log('📊 User data:', {
+        subscriptionTier: reservation.tier,
+        photoScansUsed: reservation.aggregateUsedAfter,
+        photoScansLimit: reservation.limit,
+        remainingScans: reservation.limit - reservation.aggregateUsedAfter,
+        iCloudAggregate: Boolean(sessionICloudID),
+      });
 
       // Detect photo type and select template
       const photoType = request.data.photoType || 'note'; // 'recipe', 'receipt', 'note', 'custom'
@@ -213,22 +807,21 @@ exports.callClaudeVision = onCall(
             body: JSON.stringify({
               model,
               max_tokens: 4096,
+              system: [{
+                type: 'text',
+                text: systemPrompt,
+                cache_control: { type: 'ephemeral' }
+              }],
               messages: [{
                 role: 'user',
-                content: [
-                  {
-                    type: 'image',
-                    source: {
-                      type: 'base64',
-                      media_type: mediaType,
-                      data: imageBase64
-                    }
-                  },
-                  {
-                    type: 'text',
-                    text: systemPrompt
+                content: [{
+                  type: 'image',
+                  source: {
+                    type: 'base64',
+                    media_type: mediaType,
+                    data: imageBase64
                   }
-                ]
+                }]
               }]
             }),
           });
@@ -287,7 +880,6 @@ exports.callClaudeVision = onCall(
       // ✅ Update usage
       console.log('💾 Updating photo scan usage...');
       await userRef.update({
-        photoScansUsed: admin.firestore.FieldValue.increment(1),
         lifetimeAPIRequests: admin.firestore.FieldValue.increment(1),
         monthlyTokens: admin.firestore.FieldValue.increment(
           result.usage.input_tokens + result.usage.output_tokens
@@ -309,7 +901,7 @@ exports.callClaudeVision = onCall(
         totalTokens: result.usage.input_tokens + result.usage.output_tokens,
         cost: estimatedCost,
         durationMs: apiDuration,
-        subscriptionTier: userData.subscriptionTier,
+        subscriptionTier: reservation.tier,
       });
 
       console.log('✅ Photo scan completed successfully');
@@ -318,7 +910,7 @@ exports.callClaudeVision = onCall(
         markdown: textContent,
         usage: result.usage,
         photoType: photoType,
-        remainingScans: Math.max(0, photoScansLimit - (photoScansUsed + 1)),
+        remainingScans: Math.max(0, reservation.limit - reservation.aggregateUsedAfter),
       };
 
     } catch (error) {
@@ -469,6 +1061,7 @@ exports.callWhisperProxy = onCall(
   },
   async (request) => {
     console.log('🎙️ === WHISPER PROXY CALLED ===');
+    console.log('[callWhisperProxy] userId:', request.auth?.uid, 'language:', request.data?.language, 'audioData length:', request.data?.audioData?.length ?? 0);
     
     if (!request.auth) {
       console.error('❌ No authentication');
@@ -495,36 +1088,49 @@ exports.callWhisperProxy = onCall(
 
     try {
       const deviceID = request.data.deviceID || 'unknown';
+      const iCloudID = request.data.iCloudID || null;
       const db = admin.firestore();
       const userRef = db.collection('users').doc(userId);
-      const userDoc = await userRef.get();
-      
-      if (!userDoc.exists) {
-        const monthKey = getMonthKey();
-        await userRef.set({
-          deviceID: deviceID,
-          voiceActionsUsed: 0,
-          voiceActionsLimit: FREE_VOICE_LIMIT,
-          voiceActionsDayKey: monthKey,
-          photoScansUsed: 0,
-          photoScansLimit: FREE_PHOTO_LIMIT,
-          photoScansDayKey: monthKey,
-          subscriptionTier: 'free',
-          createdAt: admin.firestore.FieldValue.serverTimestamp(),
-        });
-      }
-      
-      let userData = userDoc.data() || {
-        voiceActionsUsed: 0,
-        voiceActionsLimit: FREE_VOICE_LIMIT,
-        voiceActionsDayKey: getMonthKey(),
-        subscriptionTier: 'free'
-      };
-
+      let userData = await ensureUserDocument(db, userId, deviceID, iCloudID);
       userData = await ensureMonthlyVoiceReset(userRef, userData);
 
-      const voiceActionsLimit = userData.subscriptionTier === 'pro' ? 999999 : (userData.voiceActionsLimit || FREE_VOICE_LIMIT);
-      const voiceActionsUsed = userData.voiceActionsUsed || 0;
+      const sessionICloudID = resolveICloudIDForSession(iCloudID, userData);
+      const aggregateCheck = await evaluateAggregatedUsageLimit(db, {
+        iCloudID: sessionICloudID,
+        usageField: 'voiceActionsUsed',
+        userData,
+        limitForTier: voiceLimitForTier,
+      });
+
+      if (!aggregateCheck.canProceed) {
+        throw new HttpsError(
+          'resource-exhausted',
+          `VOICE_ACTIONS_LIMIT_REACHED:${aggregateCheck.limit}:${aggregateCheck.tier}`,
+          {
+            limit: aggregateCheck.limit,
+            used: aggregateCheck.totalUsed,
+            tier: aggregateCheck.tier,
+          }
+        );
+      }
+
+      const reservation = await db.runTransaction(async (transaction) => {
+        const snapshot = await transaction.get(userRef);
+        const data = snapshot.data() || {};
+        const used = data.voiceActionsUsed || 0;
+
+        transaction.update(userRef, {
+          voiceActionsUsed: used + 1,
+        });
+
+        return {
+          canProceed: true,
+          usedAfter: used + 1,
+          aggregateUsedAfter: aggregateCheck.totalUsed + 1,
+          limit: aggregateCheck.limit,
+          tier: aggregateCheck.tier,
+        };
+      });
 
       const apiKey = openaiApiKey.value();
       if (!apiKey) {
@@ -538,11 +1144,14 @@ exports.callWhisperProxy = onCall(
       });
       form.append('model', 'whisper-1');
       
+      // Whisper expects ISO-639-1 (e.g. "en"), not locale (e.g. "en-US") — 400 Bad Request otherwise
       if (language && language !== 'auto') {
-        form.append('language', language);
+        const iso6391 = language.split('-')[0].toLowerCase();
+        form.append('language', iso6391);
       }
 
       const apiStartTime = Date.now();
+      console.log('[callWhisperProxy] Calling OpenAI Whisper API, audio size:', audioSizeMB.toFixed(2), 'MB');
       const response = await axios.post(
         'https://api.openai.com/v1/audio/transcriptions',
         form,
@@ -557,6 +1166,7 @@ exports.callWhisperProxy = onCall(
       );
 
       const apiDuration = Date.now() - apiStartTime;
+      console.log('[callWhisperProxy] OpenAI response OK, duration:', apiDuration, 'ms');
       const result = response.data;
       
       const estimatedDurationMinutes = audioSizeMB / 2;
@@ -564,7 +1174,6 @@ exports.callWhisperProxy = onCall(
 
       // ✅ Update usage for Whisper
       await userRef.update({
-        voiceActionsUsed: admin.firestore.FieldValue.increment(1),
         lifetimeAPIRequests: admin.firestore.FieldValue.increment(1),
         lastRequestAt: admin.firestore.FieldValue.serverTimestamp(),
       });
@@ -578,16 +1187,23 @@ exports.callWhisperProxy = onCall(
         cost: parseFloat(estimatedCost.toFixed(6)),
         textLength: result.text?.length,
         durationMs: apiDuration,
-        subscriptionTier: userData.subscriptionTier,
+        subscriptionTier: reservation.tier,
       });
 
       return {
         text: result.text,
-        remainingTranscriptions: Math.max(0, voiceActionsLimit - (voiceActionsUsed + 1)),
-        remainingRequests: Math.max(0, voiceActionsLimit - (voiceActionsUsed + 1)),
+        remainingTranscriptions: Math.max(0, reservation.limit - reservation.aggregateUsedAfter),
+        remainingRequests: Math.max(0, reservation.limit - reservation.aggregateUsedAfter),
       };
 
     } catch (error) {
+      console.error('[callWhisperProxy] ERROR:', error.message);
+      console.error('[callWhisperProxy] Stack:', error.stack);
+      if (error.response) {
+        console.error('[callWhisperProxy] API response status:', error.response.status);
+        console.error('[callWhisperProxy] API response data:', JSON.stringify(error.response.data || {}));
+      }
+      
       if (error instanceof HttpsError) {
         throw error;
       }
@@ -595,7 +1211,7 @@ exports.callWhisperProxy = onCall(
       if (error.response) {
         throw new HttpsError(
           'internal',
-          `Whisper API error: ${error.response.status}`
+          `Whisper API error: ${error.response.status} - ${JSON.stringify(error.response.data || {})}`
         );
       }
       
@@ -615,47 +1231,32 @@ exports.getUserUsage = onCall({region: 'us-central1'}, async (request) => {
 
   const userId = request.auth.uid;
   const deviceID = request.data?.deviceID || 'unknown';
+  const iCloudID = request.data?.iCloudID || null;
   
   const db = admin.firestore();
   const userRef = db.collection('users').doc(userId);
-  const userDoc = await userRef.get();
-  let userData = userDoc.data();
-
-  if (!userData) {
-    const monthKey = getMonthKey();
-    await userRef.set({
-      deviceID: deviceID,
-      voiceActionsUsed: 0,
-      voiceActionsLimit: FREE_VOICE_LIMIT,
-      voiceActionsDayKey: monthKey,
-      photoScansUsed: 0,
-      photoScansLimit: FREE_PHOTO_LIMIT,
-      photoScansDayKey: monthKey,
-      lifetimeAPIRequests: 0,
-      monthlyTokens: 0,
-      subscriptionTier: 'free',
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
-    });
-    
-    userData = {
-      voiceActionsUsed: 0,
-      voiceActionsLimit: FREE_VOICE_LIMIT,
-      voiceActionsDayKey: monthKey,
-      photoScansUsed: 0,
-      photoScansLimit: FREE_PHOTO_LIMIT,
-      photoScansDayKey: monthKey,
-      subscriptionTier: 'free',
-    };
-  }
-
+  let userData = await ensureUserDocument(db, userId, deviceID, iCloudID);
   userData = await ensureMonthlyVoiceReset(userRef, userData);
   userData = await ensureMonthlyPhotoReset(userRef, userData);
 
-  const voiceActionsLimit = userData.subscriptionTier === 'pro' ? 999999 : (userData.voiceActionsLimit || FREE_VOICE_LIMIT);
-  const photoScansLimit = userData.subscriptionTier === 'pro' ? 999999 : (userData.photoScansLimit || FREE_PHOTO_LIMIT);
-  
-  const voiceActionsUsed = userData.voiceActionsUsed || 0;
-  const photoScansUsed = userData.photoScansUsed || 0;
+  const sessionICloudID = resolveICloudIDForSession(iCloudID, userData);
+  if (sessionICloudID) {
+    userData = await syncSubscriptionTierFromICloudPeers(db, userRef, userData, sessionICloudID);
+    userData = await ensureMonthlyVoiceReset(userRef, userData);
+    userData = await ensureMonthlyPhotoReset(userRef, userData);
+  }
+
+  const iCloudDocs = sessionICloudID ? await queryUserDocsByICloudID(db, sessionICloudID) : [];
+
+  const voiceActionsLimit = voiceLimitForTier(userData.subscriptionTier || 'free');
+  const photoScansLimit = photoLimitForTier(userData.subscriptionTier || 'free');
+
+  const voiceActionsUsed = iCloudDocs.length > 0
+    ? sumUsageFieldAcrossDocs(iCloudDocs, 'voiceActionsUsed')
+    : (userData.voiceActionsUsed || 0);
+  const photoScansUsed = iCloudDocs.length > 0
+    ? sumUsageFieldAcrossDocs(iCloudDocs, 'photoScansUsed')
+    : (userData.photoScansUsed || 0);
 
   return {
     // Voice transcriptions
@@ -677,6 +1278,61 @@ exports.getUserUsage = onCall({region: 'us-central1'}, async (request) => {
   };
 });
 
+exports.cleanupStaleFreeUsers = onSchedule(
+  {
+    region: 'us-central1',
+    schedule: 'every 24 hours',
+    timeoutSeconds: 540,
+    memory: '256MiB'
+  },
+  async () => {
+    const db = admin.firestore();
+    const cutoffDate = new Date(Date.now() - CLEANUP_FREE_USER_DAYS * 24 * 60 * 60 * 1000);
+    console.log(`🧹 cleanupStaleFreeUsers: cutoff=${cutoffDate.toISOString()}`);
+
+    let lastDoc = null;
+    let deletedTotal = 0;
+    let scannedTotal = 0;
+
+    for (let page = 0; page < CLEANUP_MAX_PAGES; page += 1) {
+      let query = db.collection('users')
+        .where('subscriptionTier', '==', 'free')
+        .orderBy('createdAt')
+        .limit(CLEANUP_BATCH_SIZE);
+      if (lastDoc) {
+        query = query.startAfter(lastDoc);
+      }
+      const snapshot = await query.get();
+      if (snapshot.empty) {
+        break;
+      }
+
+      const batch = db.batch();
+      let batchDeletes = 0;
+      snapshot.docs.forEach((doc) => {
+        scannedTotal += 1;
+        const data = doc.data() || {};
+        if (isSafeToDeleteFreeUser(data, cutoffDate)) {
+          batch.delete(doc.ref);
+          batchDeletes += 1;
+        }
+      });
+
+      if (batchDeletes > 0) {
+        await batch.commit();
+        deletedTotal += batchDeletes;
+      }
+
+      lastDoc = snapshot.docs[snapshot.docs.length - 1];
+      if (snapshot.size < CLEANUP_BATCH_SIZE) {
+        break;
+      }
+    }
+
+    console.log(`🧹 cleanupStaleFreeUsers done: scanned=${scannedTotal} deleted=${deletedTotal}`);
+  }
+);
+
 // ═══════════════════════════════════════════════════════
 // Other functions (Subscription, etc.) - UNCHANGED
 // ═══════════════════════════════════════════════════════
@@ -696,59 +1352,87 @@ exports.verifySubscription = onCall(
 
     const userId = request.auth.uid;
     const jwsToken = request.data.jwsToken;
+    const targetProductId = request.data.targetProductId || null;
+    const deviceID = request.data.deviceID || 'unknown';
+    const iCloudID = request.data.iCloudID || null;
 
     if (!jwsToken) {
       throw new HttpsError('invalid-argument', 'jwsToken is required');
     }
 
     try {
-      const decoded = jwt.decode(jwsToken, { complete: true });
-      if (!decoded?.header) {
-        throw new Error('Invalid JWS token');
-      }
-
-      const { kid, x5c } = decoded.header;
-      let publicKey;
-
-      if (kid === 'Apple_Xcode_Key') {
-        if (!x5c?.[0]) {
-          throw new Error('Missing x5c certificate');
-        }
-        const cert = `-----BEGIN CERTIFICATE-----\n${x5c[0]}\n-----END CERTIFICATE-----`;
-        publicKey = await importX509(cert, 'ES256');
-      } else {
-        const appleKeys = await getApplePublicKeys();
-        const matchingKey = appleKeys.find(k => k.kid === kid);
-        if (!matchingKey) {
-          throw new Error(`No matching Apple public key found`);
-        }
-        publicKey = await importJWK(matchingKey, 'ES256');
-      }
-
-      const { payload } = await jwtVerify(jwsToken, publicKey, {
-        algorithms: ['ES256'],
-      });
-
-      const expiresDate = new Date(payload.expiresDate);
-      const isActive = expiresDate > new Date();
-
+      const payload = await verifyAppleSignedJWS(jwsToken);
       const db = admin.firestore();
-      await db.collection('users').doc(userId).update({
-        subscriptionTier: isActive ? 'pro' : 'free',
-        subscriptionExpiresAt: admin.firestore.Timestamp.fromDate(expiresDate),
-        subscriptionProductId: payload.productId,
-        subscriptionVerifiedAt: admin.firestore.FieldValue.serverTimestamp(),
-      });
+      const userRef = db.collection('users').doc(userId);
+      await ensureUserDocument(db, userId, deviceID, iCloudID);
+
+      const jwsProductId = String(payload.productId || '');
+      let effectivePayload = payload;
+      const normalizedTarget = targetProductId != null && String(targetProductId) !== ''
+        ? String(targetProductId)
+        : null;
+
+      if (normalizedTarget && normalizedTarget !== jwsProductId) {
+        if (KNOWN_VERIFY_TARGET_PRODUCT_IDS.has(normalizedTarget)) {
+          console.log(
+            `💳 verifySubscription: deferred product hint — applying target for tier/limits (JWS productId=${jwsProductId}, target=${normalizedTarget})`
+          );
+          effectivePayload = { ...payload, productId: normalizedTarget };
+        } else {
+          console.warn(
+            `💳 verifySubscription: unknown targetProductId ignored (target=${normalizedTarget}, JWS=${jwsProductId})`
+          );
+        }
+      }
+
+      await applySubscriptionToUserDoc(userRef, effectivePayload);
+      await saveAppleSubscriptionMapping(db, userId, effectivePayload);
+
+      const updatedSnap = await userRef.get();
+      const finalTier = updatedSnap.exists
+        ? String(updatedSnap.data().subscriptionTier || 'free')
+        : 'free';
+      const isActive = isProFromTransactionPayload(payload) || finalTier !== 'free';
+      const expiresDate = parseStoreKitDate(payload.expiresDate);
 
       return {
         success: true,
         isActive,
-        expiresAt: expiresDate.toISOString(),
-        subscriptionTier: isActive ? 'pro' : 'free',
+        expiresAt: expiresDate ? expiresDate.toISOString() : null,
+        subscriptionTier: finalTier,
       };
     } catch (err) {
       console.error('💥 VERIFY ERROR:', err.message);
       throw new HttpsError('internal', err.message);
+    }
+  }
+);
+
+/** App Store Server Notifications v2 — POST JSON `{ signedPayload }`. Apple retries on non-2xx. */
+exports.appStoreServerNotifications = onRequest(
+  {
+    region: 'us-central1',
+    timeoutSeconds: 60,
+    invoker: 'public',
+    secrets: [appleIssuerId, appleKeyId, applePrivateKey],
+  },
+  async (req, res) => {
+    if (req.method !== 'POST') {
+      res.status(405).send('Method Not Allowed');
+      return;
+    }
+    try {
+      const signedPayload = req.body?.signedPayload;
+      if (!signedPayload || typeof signedPayload !== 'string') {
+        res.status(400).json({ error: 'signedPayload required' });
+        return;
+      }
+      const db = admin.firestore();
+      await handleAppStoreServerNotification(db, signedPayload);
+      res.status(200).send('OK');
+    } catch (err) {
+      console.error('ASSN handler error:', err);
+      res.status(500).json({ error: 'Internal error' });
     }
   }
 );
