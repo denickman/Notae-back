@@ -614,10 +614,10 @@
         /* ---- PRICING ---- */
         .pricing-grid {
             display: grid;
-            grid-template-columns: 1fr 1fr;
+            grid-template-columns: 1fr 1fr 1fr;
             gap: 20px;
             margin-top: 64px;
-            max-width: 740px;
+            max-width: 1000px;
             margin-left: auto;
             margin-right: auto;
         }
@@ -1024,7 +1024,7 @@
 
                 <div class="price-card featured">
                     <div class="price-badge">Most Popular</div>
-                    <div class="price-plan">Pro</div>
+                    <div class="price-plan">Pro Monthly</div>
                     <div class="price-amount">$6.99</div>
                     <div class="price-period">per month · cancel anytime</div>
                     <ul class="price-features">
@@ -1036,6 +1036,21 @@
                     </ul>
                     <a href="#" class="btn-price btn-price-fill">Start Pro Trial</a>
                 </div>
+
+                <div class="price-card">
+                    <div class="price-badge" style="background: linear-gradient(135deg, #34d399, #059669);">Best Value</div>
+                    <div class="price-plan">Pro Yearly</div>
+                    <div class="price-amount">$39.99</div>
+                    <div class="price-period">per year · save 52%</div>
+                    <ul class="price-features">
+                        <li><span class="check">✓</span> Everything in Free</li>
+                        <li><span class="check">✓</span> Unlimited voice transcriptions</li>
+                        <li><span class="check">✓</span> Unlimited photo scans</li>
+                        <li><span class="check">✓</span> Priority AI processing</li>
+                        <li><span class="check">✓</span> Early access to new features</li>
+                    </ul>
+                    <a href="#" class="btn-price btn-price-outline" style="border-color: #34d399; color: #34d399;">Get Yearly Plan</a>
+                </div>
             </div>
         </div>
     </section>
@@ -1045,7 +1060,7 @@
         <div class="container">
             <div class="cta-box">
                 <h2>Start thinking out loud.</h2>
-                <p>Available on iPhone and iPad. iOS 16+</p>
+                <p>Available on iPhone. iOS 16+</p>
                 <a href="#" class="btn-hero btn-hero-primary" style="display: inline-flex;">
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.8-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M13 3.5c.73-.83 1.94-1.46 2.94-1.5.13 1.17-.34 2.35-1.04 3.19-.69.85-1.83 1.51-2.95 1.42-.15-1.15.41-2.35 1.05-3.11z"/></svg>
                     Download on App Store
@@ -1061,14 +1076,14 @@
             <div class="footer-links">
                 <a href="/privacy_policy.html">Privacy Policy</a>
                 <a href="/terms_of_use.html">Terms of Use</a>
-                <a href="/cdn-cgi/l/email-protection#15666065657a6761557b7a6174707465653b767a78">Support</a>
+                <a href="mailto:support@notaeapp.com">Support</a>
             </div>
             <span class="footer-copy">© 2026 Denis Yaremenko</span>
         </div>
     </footer>
 
-    <script data-cfasync="false" src="/cdn-cgi/scripts/5c5dd728/cloudflare-static/email-decode.min.js"></script><script>
-        // Waveform animation
+    <script>
+        // Waveform animation — run immediately so bars exist in DOM
         const barsContainer = document.getElementById('waveBars');
         const barCount = 32;
         const heights = [20,35,55,40,65,30,70,45,25,60,50,75,35,55,40,80,25,65,45,30,70,50,35,60,40,25,75,45,60,35,55,30];
@@ -1080,12 +1095,13 @@
             barsContainer.appendChild(bar);
         });
 
-        // Scroll reveal
+        // Scroll reveal — exclude waveform-demo from opacity:0 so it's always visible
         const observer = new IntersectionObserver((entries) => {
             entries.forEach(el => {
                 if (el.isIntersecting) {
                     el.target.style.opacity = '1';
                     el.target.style.transform = 'translateY(0)';
+                    observer.unobserve(el.target);
                 }
             });
         }, { threshold: 0.1 });
@@ -1093,4 +1109,8 @@
         document.querySelectorAll('.feat-card, .step, .price-card').forEach(el => {
             el.style.opacity = '0';
             el.style.transform = 'translateY(24px)';
- 
+            observer.observe(el);
+        });
+    </script>
+</body>
+</html>
