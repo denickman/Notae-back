@@ -23,6 +23,39 @@ const FREE_PHOTO_LIMIT = 3;
 
 const getMonthKey = () => new Date().toISOString().slice(0, 7); // UTC YYYY-MM
 
+async function ensureUserDocument(db, userId, deviceID) {
+  const userRef = db.collection('users').doc(userId);
+  const userDoc = await userRef.get();
+  if (!userDoc.exists) {
+    const monthKey = getMonthKey();
+    await userRef.set({
+      deviceID: deviceID,
+      voiceActionsUsed: 0,
+      voiceActionsLimit: FREE_VOICE_LIMIT,
+      voiceActionsDayKey: monthKey,
+      photoScansUsed: 0,
+      photoScansLimit: FREE_PHOTO_LIMIT,
+      photoScansDayKey: monthKey,
+      lifetimeAPIRequests: 0,
+      monthlyTokens: 0,
+      subscriptionTier: 'free',
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+  }
+  const doc = await userRef.get();
+  return doc.data() || {
+    voiceActionsUsed: 0,
+    voiceActionsLimit: FREE_VOICE_LIMIT,
+    voiceActionsDayKey: getMonthKey(),
+    photoScansUsed: 0,
+    photoScansLimit: FREE_PHOTO_LIMIT,
+    photoScansDayKey: getMonthKey(),
+    lifetimeAPIRequests: 0,
+    monthlyTokens: 0,
+    subscriptionTier: 'free',
+  };
+}
+
 async function ensureMonthlyVoiceReset(userRef, userData) {
   const monthKey = getMonthKey();
   const tier = userData.subscriptionTier || 'free';
@@ -119,37 +152,9 @@ exports.callClaudeVision = onCall(
       const deviceID = request.data.deviceID || 'unknown';
       console.log('📱 Device ID:', deviceID.substring(0, 8) + '...');
       
-      // Rate limiting
       const db = admin.firestore();
       const userRef = db.collection('users').doc(userId);
-      const userDoc = await userRef.get();
-
-      if (!userDoc.exists) {
-        console.log('📝 Creating new user document');
-        const monthKey = getMonthKey();
-        await userRef.set({
-          deviceID: deviceID,
-          photoScansUsed: 0,
-          photoScansLimit: FREE_PHOTO_LIMIT,
-          photoScansDayKey: monthKey,
-          voiceActionsUsed: 0,
-          voiceActionsLimit: FREE_VOICE_LIMIT,
-          voiceActionsDayKey: monthKey,
-          subscriptionTier: 'free',
-          createdAt: admin.firestore.FieldValue.serverTimestamp(),
-        });
-      }
-
-      let userData = userDoc.data() || {
-        photoScansUsed: 0,
-        photoScansLimit: FREE_PHOTO_LIMIT,
-        photoScansDayKey: getMonthKey(),
-        voiceActionsUsed: 0,
-        voiceActionsLimit: FREE_VOICE_LIMIT,
-        voiceActionsDayKey: getMonthKey(),
-        subscriptionTier: 'free'
-      };
-
+      let userData = await ensureUserDocument(db, userId, deviceID);
       userData = await ensureMonthlyPhotoReset(userRef, userData);
       
       const photoScansLimit = userData.subscriptionTier === 'pro' ? 999999 : (userData.photoScansLimit || 3);
@@ -213,22 +218,21 @@ exports.callClaudeVision = onCall(
             body: JSON.stringify({
               model,
               max_tokens: 4096,
+              system: [{
+                type: 'text',
+                text: systemPrompt,
+                cache_control: { type: 'ephemeral' }
+              }],
               messages: [{
                 role: 'user',
-                content: [
-                  {
-                    type: 'image',
-                    source: {
-                      type: 'base64',
-                      media_type: mediaType,
-                      data: imageBase64
-                    }
-                  },
-                  {
-                    type: 'text',
-                    text: systemPrompt
+                content: [{
+                  type: 'image',
+                  source: {
+                    type: 'base64',
+                    media_type: mediaType,
+                    data: imageBase64
                   }
-                ]
+                }]
               }]
             }),
           });
@@ -497,30 +501,7 @@ exports.callWhisperProxy = onCall(
       const deviceID = request.data.deviceID || 'unknown';
       const db = admin.firestore();
       const userRef = db.collection('users').doc(userId);
-      const userDoc = await userRef.get();
-      
-      if (!userDoc.exists) {
-        const monthKey = getMonthKey();
-        await userRef.set({
-          deviceID: deviceID,
-          voiceActionsUsed: 0,
-          voiceActionsLimit: FREE_VOICE_LIMIT,
-          voiceActionsDayKey: monthKey,
-          photoScansUsed: 0,
-          photoScansLimit: FREE_PHOTO_LIMIT,
-          photoScansDayKey: monthKey,
-          subscriptionTier: 'free',
-          createdAt: admin.firestore.FieldValue.serverTimestamp(),
-        });
-      }
-      
-      let userData = userDoc.data() || {
-        voiceActionsUsed: 0,
-        voiceActionsLimit: FREE_VOICE_LIMIT,
-        voiceActionsDayKey: getMonthKey(),
-        subscriptionTier: 'free'
-      };
-
+      let userData = await ensureUserDocument(db, userId, deviceID);
       userData = await ensureMonthlyVoiceReset(userRef, userData);
 
       const voiceActionsLimit = userData.subscriptionTier === 'pro' ? 999999 : (userData.voiceActionsLimit || FREE_VOICE_LIMIT);
@@ -618,36 +599,7 @@ exports.getUserUsage = onCall({region: 'us-central1'}, async (request) => {
   
   const db = admin.firestore();
   const userRef = db.collection('users').doc(userId);
-  const userDoc = await userRef.get();
-  let userData = userDoc.data();
-
-  if (!userData) {
-    const monthKey = getMonthKey();
-    await userRef.set({
-      deviceID: deviceID,
-      voiceActionsUsed: 0,
-      voiceActionsLimit: FREE_VOICE_LIMIT,
-      voiceActionsDayKey: monthKey,
-      photoScansUsed: 0,
-      photoScansLimit: FREE_PHOTO_LIMIT,
-      photoScansDayKey: monthKey,
-      lifetimeAPIRequests: 0,
-      monthlyTokens: 0,
-      subscriptionTier: 'free',
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
-    });
-    
-    userData = {
-      voiceActionsUsed: 0,
-      voiceActionsLimit: FREE_VOICE_LIMIT,
-      voiceActionsDayKey: monthKey,
-      photoScansUsed: 0,
-      photoScansLimit: FREE_PHOTO_LIMIT,
-      photoScansDayKey: monthKey,
-      subscriptionTier: 'free',
-    };
-  }
-
+  let userData = await ensureUserDocument(db, userId, deviceID);
   userData = await ensureMonthlyVoiceReset(userRef, userData);
   userData = await ensureMonthlyPhotoReset(userRef, userData);
 
