@@ -710,17 +710,16 @@ exports.verifySubscription = onCall(
       const { kid, x5c } = decoded.header;
       let publicKey;
 
-      if (kid === 'Apple_Xcode_Key') {
-        if (!x5c?.[0]) {
-          throw new Error('Missing x5c certificate');
-        }
+      // Prefer x5c certificate from the signed transaction when present.
+      // This works for Xcode StoreKit testing and App Store sandbox/production JWS.
+      if (x5c?.[0]) {
         const cert = `-----BEGIN CERTIFICATE-----\n${x5c[0]}\n-----END CERTIFICATE-----`;
         publicKey = await importX509(cert, 'ES256');
       } else {
         const appleKeys = await getApplePublicKeys();
         const matchingKey = appleKeys.find(k => k.kid === kid);
         if (!matchingKey) {
-          throw new Error(`No matching Apple public key found`);
+          throw new Error(`No matching Apple public key found for kid: ${kid || 'unknown'}`);
         }
         publicKey = await importJWK(matchingKey, 'ES256');
       }
