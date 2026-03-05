@@ -37,7 +37,6 @@
             -webkit-font-smoothing: antialiased;
         }
 
-        /* ---- NOISE OVERLAY ---- */
         body::before {
             content: '';
             position: fixed;
@@ -48,7 +47,6 @@
             opacity: 0.6;
         }
 
-        /* ---- NAV ---- */
         nav {
             position: fixed;
             top: 0; left: 0; right: 0;
@@ -101,7 +99,6 @@
         }
         .nav-cta:hover { background: #7d8fff; transform: translateY(-1px); }
 
-        /* ---- HERO ---- */
         .hero {
             min-height: 100vh;
             display: flex;
@@ -114,7 +111,6 @@
             overflow: hidden;
         }
 
-        /* Gradient orbs */
         .orb {
             position: absolute;
             border-radius: 50%;
@@ -154,7 +150,6 @@
             66% { transform: translate(30px, -20px); }
         }
 
-        /* Hero grid lines */
         .hero-grid {
             position: absolute;
             inset: 0;
@@ -263,7 +258,6 @@
             transform: translateY(-2px);
         }
 
-        /* Apple Store badge style */
         .store-badge {
             display: inline-flex;
             align-items: center;
@@ -278,7 +272,6 @@
         .store-badge-text small { display: block; font-size: 0.65rem; color: var(--text-muted); line-height: 1; margin-bottom: 2px; }
         .store-badge-text strong { font-size: 0.9rem; font-weight: 600; }
 
-        /* Scroll indicator */
         .scroll-hint {
             position: absolute;
             bottom: 40px;
@@ -313,7 +306,6 @@
             to { opacity: 1; transform: translateY(0); }
         }
 
-        /* ---- FEATURES STRIP ---- */
         .strip {
             border-top: 1px solid var(--border);
             border-bottom: 1px solid var(--border);
@@ -347,7 +339,6 @@
             to { transform: translateX(-50%); }
         }
 
-        /* ---- FEATURES SECTION ---- */
         section {
             padding: 120px 20px;
         }
@@ -391,7 +382,6 @@
             line-height: 1.7;
         }
 
-        /* Big feature cards */
         .features-main {
             display: grid;
             grid-template-columns: 1fr 1fr;
@@ -472,7 +462,6 @@
         .feat-tag.purple { background: rgba(167,139,250,0.12); color: var(--accent2); }
         .feat-tag.sky { background: rgba(56,189,248,0.12); color: var(--accent3); }
 
-        /* Wide card extra content */
         .feat-wide-inner {
             display: grid;
             grid-template-columns: 1fr 1fr;
@@ -508,7 +497,6 @@
             color: var(--text-muted);
         }
 
-        /* Waveform illustration */
         .waveform-demo {
             background: var(--bg2);
             border: 1px solid var(--border);
@@ -522,18 +510,13 @@
             display: flex;
             align-items: center;
             gap: 3px;
-            height: 48px;
+            height: 80px;
         }
         .wave-bar {
             flex: 1;
             border-radius: 3px;
             background: linear-gradient(to top, var(--accent), var(--accent2));
-            animation: wavePulse var(--dur) ease-in-out infinite;
-            animation-delay: var(--delay);
-        }
-        @keyframes wavePulse {
-            0%, 100% { height: var(--min-h); opacity: 0.4; }
-            50% { height: var(--max-h); opacity: 1; }
+            min-height: 4px;
         }
 
         .wave-text-preview {
@@ -561,7 +544,6 @@
             50% { opacity: 0; }
         }
 
-        /* ---- HOW IT WORKS ---- */
         .how-section {
             background: var(--bg2);
             border-top: 1px solid var(--border);
@@ -611,7 +593,6 @@
             font-weight: 300;
         }
 
-        /* ---- PRICING ---- */
         .pricing-grid {
             display: grid;
             grid-template-columns: 1fr 1fr 1fr;
@@ -723,7 +704,6 @@
         }
         .btn-price-fill:hover { opacity: 0.9; transform: translateY(-2px); }
 
-        /* ---- CTA ---- */
         .cta-section {
             text-align: center;
         }
@@ -760,7 +740,6 @@
             margin-bottom: 40px;
         }
 
-        /* ---- FOOTER ---- */
         footer {
             padding: 40px 20px;
             border-top: 1px solid var(--border);
@@ -772,10 +751,6 @@
             display: flex;
             align-items: center;
             justify-content: space-between;
-        }
-
-        .footer-copy {
-            text-align: right;
         }
 
         .footer-brand {
@@ -805,19 +780,14 @@
             color: var(--text-dim);
         }
 
-        /* ---- RESPONSIVE ---- */
         @media (max-width: 768px) {
             nav { padding: 16px 20px; }
             .nav-badge { display: none; }
-
             .features-main { grid-template-columns: 1fr; }
             .feat-card.wide { grid-column: 1; }
             .feat-wide-inner { grid-template-columns: 1fr; }
-
             .steps-grid { grid-template-columns: 1fr; }
-
             .pricing-grid { grid-template-columns: 1fr; max-width: 400px; }
-
             .footer-inner { flex-direction: column; gap: 20px; text-align: center; }
             .footer-links { flex-wrap: wrap; justify-content: center; gap: 20px; }
         }
@@ -885,7 +855,6 @@
             <span class="strip-item"><span class="strip-dot"></span> Dark Mode</span>
             <span class="strip-item"><span class="strip-dot"></span> SwiftUI Native</span>
             <span class="strip-item"><span class="strip-dot"></span> Privacy First</span>
-            <!-- duplicate for seamless loop -->
             <span class="strip-item"><span class="strip-dot"></span> Whisper AI Transcription</span>
             <span class="strip-item"><span class="strip-dot"></span> Claude Vision Photo Scan</span>
             <span class="strip-item"><span class="strip-dot"></span> Smart Reminders</span>
@@ -1082,20 +1051,44 @@
         </div>
     </footer>
 
-    <script data-cfasync="false" src="/cdn-cgi/scripts/5c5dd728/cloudflare-static/email-decode.min.js"></script><script>
-        // Waveform animation — run immediately so bars exist in DOM
+    <script>
+        // ---- WAVEFORM ANIMATION (JS-driven, no CSS custom property bug) ----
         const barsContainer = document.getElementById('waveBars');
         const barCount = 32;
         const heights = [20,35,55,40,65,30,70,45,25,60,50,75,35,55,40,80,25,65,45,30,70,50,35,60,40,25,75,45,60,35,55,30];
+
+        // Create bars
         heights.forEach((h, i) => {
             const bar = document.createElement('div');
             bar.className = 'wave-bar';
-            const minH = Math.max(8, h * 0.2);
-            bar.style.cssText = `--min-h: ${minH}px; --max-h: ${h}px; --dur: ${0.6 + Math.random() * 0.8}s; --delay: ${(i / barCount) * 0.5}s; height: ${minH}px;`;
+            const minH = Math.max(4, Math.round(h * 0.15));
+            bar.style.height = minH + 'px';
+            bar.dataset.min = minH;
+            bar.dataset.max = h;
             barsContainer.appendChild(bar);
         });
 
-        // Scroll reveal — exclude waveform-demo from opacity:0 so it's always visible
+        // Animate each bar independently with JS
+        function animateBar(bar) {
+            const minH = parseFloat(bar.dataset.min);
+            const maxH = parseFloat(bar.dataset.max);
+            const duration = 400 + Math.random() * 700;
+            const targetH = minH + Math.random() * (maxH - minH);
+            const opacity = 0.35 + ((targetH - minH) / (maxH - minH)) * 0.65;
+
+            bar.style.transition = `height ${duration}ms ease-in-out, opacity ${duration}ms ease-in-out`;
+            bar.style.height = targetH + 'px';
+            bar.style.opacity = opacity;
+
+            setTimeout(() => animateBar(bar), duration);
+        }
+
+        // Stagger start so bars don't all move together
+        document.querySelectorAll('.wave-bar').forEach((bar, i) => {
+            setTimeout(() => animateBar(bar), i * 30);
+        });
+
+        // ---- SCROLL REVEAL ----
         const observer = new IntersectionObserver((entries) => {
             entries.forEach(el => {
                 if (el.isIntersecting) {
@@ -1107,4 +1100,11 @@
         }, { threshold: 0.1 });
 
         document.querySelectorAll('.feat-card, .step, .price-card').forEach(el => {
-            e
+            el.style.opacity = '0';
+            el.style.transform = 'translateY(20px)';
+            el.style.transition = 'opacity 0.5s ease, transform 0.5s ease';
+            observer.observe(el);
+        });
+    </script>
+</body>
+</html>
