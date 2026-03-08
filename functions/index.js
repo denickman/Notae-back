@@ -18,8 +18,8 @@ const appleIssuerId = defineSecret('APPLE_ISSUER_ID');
 const appleKeyId = defineSecret('APPLE_KEY_ID');
 const applePrivateKey = defineSecret('APPLE_PRIVATE_KEY');
 
-const FREE_VOICE_LIMIT = 7;
-const FREE_PHOTO_LIMIT = 3;
+const FREE_VOICE_LIMIT = 10;
+const FREE_PHOTO_LIMIT = 5;
 
 const getMonthKey = () => new Date().toISOString().slice(0, 7); // UTC YYYY-MM
 
