@@ -473,6 +473,7 @@ exports.callWhisperProxy = onCall(
   },
   async (request) => {
     console.log('🎙️ === WHISPER PROXY CALLED ===');
+    console.log('[callWhisperProxy] userId:', request.auth?.uid, 'language:', request.data?.language, 'audioData length:', request.data?.audioData?.length ?? 0);
     
     if (!request.auth) {
       console.error('❌ No authentication');
@@ -519,11 +520,14 @@ exports.callWhisperProxy = onCall(
       });
       form.append('model', 'whisper-1');
       
+      // Whisper expects ISO-639-1 (e.g. "en"), not locale (e.g. "en-US") — 400 Bad Request otherwise
       if (language && language !== 'auto') {
-        form.append('language', language);
+        const iso6391 = language.split('-')[0].toLowerCase();
+        form.append('language', iso6391);
       }
 
       const apiStartTime = Date.now();
+      console.log('[callWhisperProxy] Calling OpenAI Whisper API, audio size:', audioSizeMB.toFixed(2), 'MB');
       const response = await axios.post(
         'https://api.openai.com/v1/audio/transcriptions',
         form,
@@ -538,6 +542,7 @@ exports.callWhisperProxy = onCall(
       );
 
       const apiDuration = Date.now() - apiStartTime;
+      console.log('[callWhisperProxy] OpenAI response OK, duration:', apiDuration, 'ms');
       const result = response.data;
       
       const estimatedDurationMinutes = audioSizeMB / 2;
@@ -569,6 +574,13 @@ exports.callWhisperProxy = onCall(
       };
 
     } catch (error) {
+      console.error('[callWhisperProxy] ERROR:', error.message);
+      console.error('[callWhisperProxy] Stack:', error.stack);
+      if (error.response) {
+        console.error('[callWhisperProxy] API response status:', error.response.status);
+        console.error('[callWhisperProxy] API response data:', JSON.stringify(error.response.data || {}));
+      }
+      
       if (error instanceof HttpsError) {
         throw error;
       }
@@ -576,7 +588,7 @@ exports.callWhisperProxy = onCall(
       if (error.response) {
         throw new HttpsError(
           'internal',
-          `Whisper API error: ${error.response.status}`
+          `Whisper API error: ${error.response.status} - ${JSON.stringify(error.response.data || {})}`
         );
       }
       
