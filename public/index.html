@@ -16,13 +16,16 @@
             --surface: #13131e;
             --surface2: #1a1a28;
             --border: rgba(255,255,255,0.07);
-            --accent: #6B7FFF;
-            --accent2: #A78BFA;
-            --accent3: #38BDF8;
+            /* Brand (Notae app / icon: #194369 → #2596BE) */
+            --accent: #2596BE;
+            --accent-deep: #194369;
+            --accent-sky: #5BBEDC;
+            --accent2: var(--accent-deep);
+            --accent3: var(--accent-sky);
             --text: #f0f0f8;
             --text-muted: rgba(240,240,248,0.45);
             --text-dim: rgba(240,240,248,0.25);
-            --glow: 0 0 60px rgba(107,127,255,0.15);
+            --glow: 0 0 60px rgba(37, 150, 190, 0.18);
         }
 
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -77,8 +80,8 @@
             font-weight: 500;
             padding: 4px 10px;
             border-radius: 20px;
-            background: rgba(107,127,255,0.15);
-            border: 1px solid rgba(107,127,255,0.3);
+            background: rgba(37,150,190,0.15);
+            border: 1px solid rgba(37,150,190,0.3);
             color: var(--accent);
             letter-spacing: 0.05em;
             text-transform: uppercase;
@@ -97,7 +100,7 @@
             font-weight: 500;
             transition: all 0.2s;
         }
-        .nav-cta:hover { background: #7d8fff; transform: translateY(-1px); }
+        .nav-cta:hover { background: #3aa8c4; transform: translateY(-1px); }
 
         .hero {
             min-height: 100vh;
@@ -119,19 +122,19 @@
         }
         .orb-1 {
             width: 600px; height: 600px;
-            background: radial-gradient(circle, rgba(107,127,255,0.18) 0%, transparent 70%);
+            background: radial-gradient(circle, rgba(37,150,190,0.18) 0%, transparent 70%);
             top: -100px; left: -100px;
             animation: drift1 12s ease-in-out infinite;
         }
         .orb-2 {
             width: 500px; height: 500px;
-            background: radial-gradient(circle, rgba(167,139,250,0.14) 0%, transparent 70%);
+            background: radial-gradient(circle, rgba(25,67,105,0.14) 0%, transparent 70%);
             bottom: -80px; right: -80px;
             animation: drift2 15s ease-in-out infinite;
         }
         .orb-3 {
             width: 300px; height: 300px;
-            background: radial-gradient(circle, rgba(56,189,248,0.1) 0%, transparent 70%);
+            background: radial-gradient(circle, rgba(91,190,220,0.1) 0%, transparent 70%);
             top: 40%; left: 60%;
             animation: drift3 10s ease-in-out infinite;
         }
@@ -154,8 +157,8 @@
             position: absolute;
             inset: 0;
             background-image:
-                linear-gradient(rgba(107,127,255,0.04) 1px, transparent 1px),
-                linear-gradient(90deg, rgba(107,127,255,0.04) 1px, transparent 1px);
+                linear-gradient(rgba(37,150,190,0.04) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(37,150,190,0.04) 1px, transparent 1px);
             background-size: 60px 60px;
             mask-image: radial-gradient(ellipse 80% 80% at 50% 50%, black 0%, transparent 100%);
             -webkit-mask-image: radial-gradient(ellipse 80% 80% at 50% 50%, black 0%, transparent 100%);
@@ -167,11 +170,11 @@
             gap: 8px;
             padding: 6px 16px;
             border-radius: 100px;
-            background: rgba(107,127,255,0.1);
-            border: 1px solid rgba(107,127,255,0.25);
+            background: rgba(37,150,190,0.1);
+            border: 1px solid rgba(37,150,190,0.25);
             font-size: 0.8rem;
             font-weight: 500;
-            color: var(--accent2);
+            color: var(--accent3);
             letter-spacing: 0.04em;
             margin-bottom: 32px;
             opacity: 0;
@@ -241,11 +244,11 @@
         .btn-hero-primary {
             background: linear-gradient(135deg, var(--accent), var(--accent2));
             color: white;
-            box-shadow: 0 8px 32px rgba(107,127,255,0.3);
+            box-shadow: 0 8px 32px rgba(37,150,190,0.3);
         }
         .btn-hero-primary:hover {
             transform: translateY(-3px);
-            box-shadow: 0 16px 48px rgba(107,127,255,0.4);
+            box-shadow: 0 16px 48px rgba(37,150,190,0.4);
         }
         .btn-hero-secondary {
             background: var(--surface);
@@ -399,7 +402,7 @@
             transition: all 0.3s;
         }
         .feat-card:hover {
-            border-color: rgba(107,127,255,0.25);
+            border-color: rgba(37,150,190,0.25);
             transform: translateY(-4px);
             box-shadow: var(--glow);
         }
@@ -426,9 +429,9 @@
             margin-bottom: 24px;
             font-size: 1.4rem;
         }
-        .feat-icon-wrap.blue { background: rgba(107,127,255,0.15); }
-        .feat-icon-wrap.purple { background: rgba(167,139,250,0.15); }
-        .feat-icon-wrap.sky { background: rgba(56,189,248,0.15); }
+        .feat-icon-wrap.blue { background: rgba(37,150,190,0.15); }
+        .feat-icon-wrap.purple { background: rgba(25,67,105,0.15); }
+        .feat-icon-wrap.sky { background: rgba(91,190,220,0.15); }
         .feat-icon-wrap.green { background: rgba(52,211,153,0.15); }
 
         .feat-card h3 {
@@ -458,9 +461,9 @@
             letter-spacing: 0.05em;
             text-transform: uppercase;
         }
-        .feat-tag.blue { background: rgba(107,127,255,0.12); color: var(--accent); }
-        .feat-tag.purple { background: rgba(167,139,250,0.12); color: var(--accent2); }
-        .feat-tag.sky { background: rgba(56,189,248,0.12); color: var(--accent3); }
+        .feat-tag.blue { background: rgba(37,150,190,0.12); color: var(--accent); }
+        .feat-tag.purple { background: rgba(25,67,105,0.12); color: var(--accent3); }
+        .feat-tag.sky { background: rgba(91,190,220,0.12); color: var(--accent3); }
 
         .feat-wide-inner {
             display: grid;
@@ -615,9 +618,9 @@
             transform: translateY(-4px);
         }
         .price-card.featured {
-            background: linear-gradient(135deg, rgba(107,127,255,0.12), rgba(167,139,250,0.08));
-            border-color: rgba(107,127,255,0.35);
-            box-shadow: 0 0 60px rgba(107,127,255,0.1);
+            background: linear-gradient(135deg, rgba(37,150,190,0.12), rgba(25,67,105,0.08));
+            border-color: rgba(37,150,190,0.35);
+            box-shadow: 0 0 60px rgba(37,150,190,0.1);
         }
 
         .price-badge {
@@ -721,7 +724,7 @@
             content: '';
             position: absolute;
             inset: 0;
-            background: radial-gradient(ellipse 60% 60% at 50% 0%, rgba(107,127,255,0.12) 0%, transparent 100%);
+            background: radial-gradient(ellipse 60% 60% at 50% 0%, rgba(37,150,190,0.12) 0%, transparent 100%);
             pointer-events: none;
         }
 
@@ -878,7 +881,7 @@
             <div class="features-main">
                 <!-- Voice card (wide) -->
                 <div class="feat-card wide">
-                    <div class="feat-card-glow" style="background: radial-gradient(ellipse at 30% 0%, rgba(107,127,255,0.15), transparent 60%);"></div>
+                    <div class="feat-card-glow" style="background: radial-gradient(ellipse at 30% 0%, rgba(37,150,190,0.15), transparent 60%);"></div>
                     <div class="feat-wide-inner">
                         <div>
                             <div class="feat-icon-wrap blue">🎙</div>
@@ -910,7 +913,7 @@
 
                 <!-- Photo scan -->
                 <div class="feat-card">
-                    <div class="feat-card-glow" style="background: radial-gradient(ellipse at 50% 0%, rgba(167,139,250,0.12), transparent 60%);"></div>
+                    <div class="feat-card-glow" style="background: radial-gradient(ellipse at 50% 0%, rgba(25,67,105,0.12), transparent 60%);"></div>
                     <div class="feat-icon-wrap purple">📷</div>
                     <h3>Photo Scan & Text Extraction</h3>
                     <p>Point your camera at any document, whiteboard, or printed text. Claude Vision reads, extracts, and formats the content into a clean, searchable note in seconds.</p>
@@ -919,7 +922,7 @@
 
                 <!-- Reminders -->
                 <div class="feat-card">
-                    <div class="feat-card-glow" style="background: radial-gradient(ellipse at 50% 0%, rgba(56,189,248,0.1), transparent 60%);"></div>
+                    <div class="feat-card-glow" style="background: radial-gradient(ellipse at 50% 0%, rgba(91,190,220,0.1), transparent 60%);"></div>
                     <div class="feat-icon-wrap sky">⏰</div>
                     <h3>Smart Reminders</h3>
                     <p>Set reminders from within any note. Natural language support — type "remind me tomorrow at 9am" and Notae handles the rest. Never forget an action item again.</p>
