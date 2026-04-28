@@ -20,6 +20,8 @@ const applePrivateKey = defineSecret('APPLE_PRIVATE_KEY');
 
 const FREE_VOICE_LIMIT = 10;
 const FREE_PHOTO_LIMIT = 5;
+const PLUS_VOICE_LIMIT = 50;
+const PLUS_PHOTO_LIMIT = 25;
 
 /** Firestore: maps Apple `originalTransactionId` → Firebase Auth uid (for App Store Server Notifications). */
 const COLLECTION_APPLE_SUBSCRIPTIONS = 'appleSubscriptions';
@@ -91,8 +93,19 @@ async function saveAppleSubscriptionMapping(db, userId, transactionPayload) {
 function buildUserSubscriptionFields(transactionPayload) {
   const isActive = isProFromTransactionPayload(transactionPayload);
   const expiresDate = parseStoreKitDate(transactionPayload.expiresDate);
+
+  let tier = 'free';
+  if (isActive) {
+    const productId = String(transactionPayload.productId || '');
+    if (productId.includes('plus')) {
+      tier = 'plus';
+    } else if (productId.includes('pro')) {
+      tier = 'pro';
+    }
+  }
+
   const out = {
-    subscriptionTier: isActive ? 'pro' : 'free',
+    subscriptionTier: tier,
     subscriptionProductId: transactionPayload.productId || null,
     subscriptionVerifiedAt: admin.firestore.FieldValue.serverTimestamp(),
   };
@@ -249,19 +262,20 @@ async function ensureUserDocument(db, userId, deviceID) {
 async function ensureMonthlyVoiceReset(userRef, userData) {
   const monthKey = getMonthKey();
   const tier = userData.subscriptionTier || 'free';
-  const needsLimitFix = tier !== 'pro' && (userData.voiceActionsLimit || FREE_VOICE_LIMIT) !== FREE_VOICE_LIMIT;
+  const expectedLimit = tier === 'plus' ? PLUS_VOICE_LIMIT : FREE_VOICE_LIMIT;
+  const needsLimitFix = tier !== 'pro' && (userData.voiceActionsLimit || expectedLimit) !== expectedLimit;
   const needsReset = tier !== 'pro' && userData.voiceActionsDayKey !== monthKey;
 
   if (needsReset || needsLimitFix) {
     await userRef.update({
       voiceActionsUsed: needsReset ? 0 : (userData.voiceActionsUsed || 0),
       voiceActionsDayKey: monthKey,
-      ...(needsLimitFix ? { voiceActionsLimit: FREE_VOICE_LIMIT } : {}),
+      ...(needsLimitFix ? { voiceActionsLimit: expectedLimit } : {}),
     });
     userData.voiceActionsUsed = needsReset ? 0 : (userData.voiceActionsUsed || 0);
     userData.voiceActionsDayKey = monthKey;
     if (needsLimitFix) {
-      userData.voiceActionsLimit = FREE_VOICE_LIMIT;
+      userData.voiceActionsLimit = expectedLimit;
     }
   }
 
@@ -271,19 +285,20 @@ async function ensureMonthlyVoiceReset(userRef, userData) {
 async function ensureMonthlyPhotoReset(userRef, userData) {
   const monthKey = getMonthKey();
   const tier = userData.subscriptionTier || 'free';
-  const needsLimitFix = tier !== 'pro' && (userData.photoScansLimit || FREE_PHOTO_LIMIT) !== FREE_PHOTO_LIMIT;
+  const expectedLimit = tier === 'plus' ? PLUS_PHOTO_LIMIT : FREE_PHOTO_LIMIT;
+  const needsLimitFix = tier !== 'pro' && (userData.photoScansLimit || expectedLimit) !== expectedLimit;
   const needsReset = tier !== 'pro' && userData.photoScansDayKey !== monthKey;
 
   if (needsReset || needsLimitFix) {
     await userRef.update({
       photoScansUsed: needsReset ? 0 : (userData.photoScansUsed || 0),
       photoScansDayKey: monthKey,
-      ...(needsLimitFix ? { photoScansLimit: FREE_PHOTO_LIMIT } : {}),
+      ...(needsLimitFix ? { photoScansLimit: expectedLimit } : {}),
     });
     userData.photoScansUsed = needsReset ? 0 : (userData.photoScansUsed || 0);
     userData.photoScansDayKey = monthKey;
     if (needsLimitFix) {
-      userData.photoScansLimit = FREE_PHOTO_LIMIT;
+      userData.photoScansLimit = expectedLimit;
     }
   }
 
@@ -347,7 +362,12 @@ exports.callClaudeVision = onCall(
       let userData = await ensureUserDocument(db, userId, deviceID);
       userData = await ensureMonthlyPhotoReset(userRef, userData);
       
-      const photoScansLimit = userData.subscriptionTier === 'pro' ? 999999 : (userData.photoScansLimit || 3);
+      const photoScansLimit =
+        userData.subscriptionTier === 'pro'
+          ? 999999
+          : userData.subscriptionTier === 'plus'
+            ? PLUS_PHOTO_LIMIT
+            : userData.photoScansLimit || FREE_PHOTO_LIMIT;
       const photoScansUsed = userData.photoScansUsed || 0;
 
       console.log('📊 User data:', {
@@ -357,8 +377,8 @@ exports.callClaudeVision = onCall(
         remainingScans: photoScansLimit - photoScansUsed,
       });
 
-      // Check limit
-      if (photoScansUsed >= photoScansLimit && userData.subscriptionTier === 'free') {
+      // Check limit (non-Pro tiers: free + plus capped monthly)
+      if (photoScansUsed >= photoScansLimit && userData.subscriptionTier !== 'pro') {
         console.error('❌ Photo scans limit exceeded');
         throw new HttpsError(
           'resource-exhausted',
@@ -695,8 +715,25 @@ exports.callWhisperProxy = onCall(
       let userData = await ensureUserDocument(db, userId, deviceID);
       userData = await ensureMonthlyVoiceReset(userRef, userData);
 
-      const voiceActionsLimit = userData.subscriptionTier === 'pro' ? 999999 : (userData.voiceActionsLimit || FREE_VOICE_LIMIT);
+      const voiceActionsLimit =
+        userData.subscriptionTier === 'pro'
+          ? 999999
+          : userData.subscriptionTier === 'plus'
+            ? PLUS_VOICE_LIMIT
+            : userData.voiceActionsLimit || FREE_VOICE_LIMIT;
       const voiceActionsUsed = userData.voiceActionsUsed || 0;
+
+      if (voiceActionsUsed >= voiceActionsLimit && userData.subscriptionTier !== 'pro') {
+        throw new HttpsError(
+          'resource-exhausted',
+          `VOICE_ACTIONS_LIMIT_REACHED:${voiceActionsLimit}:${userData.subscriptionTier}`,
+          {
+            limit: voiceActionsLimit,
+            used: voiceActionsUsed,
+            tier: userData.subscriptionTier,
+          }
+        );
+      }
 
       const apiKey = openaiApiKey.value();
       if (!apiKey) {
@@ -805,9 +842,19 @@ exports.getUserUsage = onCall({region: 'us-central1'}, async (request) => {
   userData = await ensureMonthlyVoiceReset(userRef, userData);
   userData = await ensureMonthlyPhotoReset(userRef, userData);
 
-  const voiceActionsLimit = userData.subscriptionTier === 'pro' ? 999999 : (userData.voiceActionsLimit || FREE_VOICE_LIMIT);
-  const photoScansLimit = userData.subscriptionTier === 'pro' ? 999999 : (userData.photoScansLimit || FREE_PHOTO_LIMIT);
-  
+  const voiceActionsLimit =
+    userData.subscriptionTier === 'pro'
+      ? 999999
+      : userData.subscriptionTier === 'plus'
+        ? PLUS_VOICE_LIMIT
+        : userData.voiceActionsLimit || FREE_VOICE_LIMIT;
+  const photoScansLimit =
+    userData.subscriptionTier === 'pro'
+      ? 999999
+      : userData.subscriptionTier === 'plus'
+        ? PLUS_PHOTO_LIMIT
+        : userData.photoScansLimit || FREE_PHOTO_LIMIT;
+
   const voiceActionsUsed = userData.voiceActionsUsed || 0;
   const photoScansUsed = userData.photoScansUsed || 0;
 
@@ -865,12 +912,18 @@ exports.verifySubscription = onCall(
 
       const isActive = isProFromTransactionPayload(payload);
       const expiresDate = parseStoreKitDate(payload.expiresDate);
+      let subscriptionTierResolved = 'free';
+      if (isActive) {
+        const pid = String(payload.productId || '');
+        if (pid.includes('plus')) subscriptionTierResolved = 'plus';
+        else if (pid.includes('pro')) subscriptionTierResolved = 'pro';
+      }
 
       return {
         success: true,
         isActive,
         expiresAt: expiresDate ? expiresDate.toISOString() : null,
-        subscriptionTier: isActive ? 'pro' : 'free',
+        subscriptionTier: subscriptionTierResolved,
       };
     } catch (err) {
       console.error('💥 VERIFY ERROR:', err.message);
