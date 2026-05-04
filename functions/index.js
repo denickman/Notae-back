@@ -122,7 +122,19 @@ function buildUserSubscriptionFields(transactionPayload) {
 }
 
 async function applySubscriptionToUserDoc(userRef, transactionPayload) {
-  await userRef.set(buildUserSubscriptionFields(transactionPayload), { merge: true });
+  const fields = buildUserSubscriptionFields(transactionPayload);
+  const currentSnap = await userRef.get();
+  const currentTier = currentSnap.exists
+    ? String(currentSnap.data().subscriptionTier || 'free')
+    : 'free';
+  const newTier = String(fields.subscriptionTier || 'free');
+  const tierOrder = { free: 0, plus: 1, pro: 2 };
+  const isUpgrade = (tierOrder[newTier] || 0) > (tierOrder[currentTier] || 0);
+  if (isUpgrade) {
+    fields.voiceActionsUsed = 0;
+    fields.photoScansUsed = 0;
+  }
+  await userRef.set(fields, { merge: true });
 }
 
 /**
