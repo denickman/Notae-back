@@ -22,6 +22,8 @@ const FREE_VOICE_LIMIT = 10;
 const FREE_PHOTO_LIMIT = 5;
 const PLUS_VOICE_LIMIT = 50;
 const PLUS_PHOTO_LIMIT = 25;
+const PRO_VOICE_LIMIT = 300;
+const PRO_PHOTO_LIMIT = 150;
 
 /** Firestore: maps Apple `originalTransactionId` → Firebase Auth uid (for App Store Server Notifications). */
 const COLLECTION_APPLE_SUBSCRIPTIONS = 'appleSubscriptions';
@@ -274,9 +276,14 @@ async function ensureUserDocument(db, userId, deviceID) {
 async function ensureMonthlyVoiceReset(userRef, userData) {
   const monthKey = getMonthKey();
   const tier = userData.subscriptionTier || 'free';
-  const expectedLimit = tier === 'plus' ? PLUS_VOICE_LIMIT : FREE_VOICE_LIMIT;
-  const needsLimitFix = tier !== 'pro' && (userData.voiceActionsLimit || expectedLimit) !== expectedLimit;
-  const needsReset = tier !== 'pro' && userData.voiceActionsDayKey !== monthKey;
+  const expectedLimit =
+    tier === 'pro'
+      ? PRO_VOICE_LIMIT
+      : tier === 'plus'
+        ? PLUS_VOICE_LIMIT
+        : FREE_VOICE_LIMIT;
+  const needsLimitFix = (userData.voiceActionsLimit || expectedLimit) !== expectedLimit;
+  const needsReset = userData.voiceActionsDayKey !== monthKey;
 
   if (needsReset || needsLimitFix) {
     await userRef.update({
@@ -297,9 +304,14 @@ async function ensureMonthlyVoiceReset(userRef, userData) {
 async function ensureMonthlyPhotoReset(userRef, userData) {
   const monthKey = getMonthKey();
   const tier = userData.subscriptionTier || 'free';
-  const expectedLimit = tier === 'plus' ? PLUS_PHOTO_LIMIT : FREE_PHOTO_LIMIT;
-  const needsLimitFix = tier !== 'pro' && (userData.photoScansLimit || expectedLimit) !== expectedLimit;
-  const needsReset = tier !== 'pro' && userData.photoScansDayKey !== monthKey;
+  const expectedLimit =
+    tier === 'pro'
+      ? PRO_PHOTO_LIMIT
+      : tier === 'plus'
+        ? PLUS_PHOTO_LIMIT
+        : FREE_PHOTO_LIMIT;
+  const needsLimitFix = (userData.photoScansLimit || expectedLimit) !== expectedLimit;
+  const needsReset = userData.photoScansDayKey !== monthKey;
 
   if (needsReset || needsLimitFix) {
     await userRef.update({
@@ -376,7 +388,7 @@ exports.callClaudeVision = onCall(
       
       const photoScansLimit =
         userData.subscriptionTier === 'pro'
-          ? 999999
+          ? PRO_PHOTO_LIMIT
           : userData.subscriptionTier === 'plus'
             ? PLUS_PHOTO_LIMIT
             : userData.photoScansLimit || FREE_PHOTO_LIMIT;
@@ -389,8 +401,8 @@ exports.callClaudeVision = onCall(
         remainingScans: photoScansLimit - photoScansUsed,
       });
 
-      // Check limit (non-Pro tiers: free + plus capped monthly)
-      if (photoScansUsed >= photoScansLimit && userData.subscriptionTier !== 'pro') {
+      // Check limit (all tiers capped monthly)
+      if (photoScansUsed >= photoScansLimit) {
         console.error('❌ Photo scans limit exceeded');
         throw new HttpsError(
           'resource-exhausted',
@@ -729,13 +741,13 @@ exports.callWhisperProxy = onCall(
 
       const voiceActionsLimit =
         userData.subscriptionTier === 'pro'
-          ? 999999
+          ? PRO_VOICE_LIMIT
           : userData.subscriptionTier === 'plus'
             ? PLUS_VOICE_LIMIT
             : userData.voiceActionsLimit || FREE_VOICE_LIMIT;
       const voiceActionsUsed = userData.voiceActionsUsed || 0;
 
-      if (voiceActionsUsed >= voiceActionsLimit && userData.subscriptionTier !== 'pro') {
+      if (voiceActionsUsed >= voiceActionsLimit) {
         throw new HttpsError(
           'resource-exhausted',
           `VOICE_ACTIONS_LIMIT_REACHED:${voiceActionsLimit}:${userData.subscriptionTier}`,
@@ -856,13 +868,13 @@ exports.getUserUsage = onCall({region: 'us-central1'}, async (request) => {
 
   const voiceActionsLimit =
     userData.subscriptionTier === 'pro'
-      ? 999999
+      ? PRO_VOICE_LIMIT
       : userData.subscriptionTier === 'plus'
         ? PLUS_VOICE_LIMIT
         : userData.voiceActionsLimit || FREE_VOICE_LIMIT;
   const photoScansLimit =
     userData.subscriptionTier === 'pro'
-      ? 999999
+      ? PRO_PHOTO_LIMIT
       : userData.subscriptionTier === 'plus'
         ? PLUS_PHOTO_LIMIT
         : userData.photoScansLimit || FREE_PHOTO_LIMIT;
