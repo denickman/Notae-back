@@ -386,31 +386,56 @@ exports.callClaudeVision = onCall(
       let userData = await ensureUserDocument(db, userId, deviceID);
       userData = await ensureMonthlyPhotoReset(userRef, userData);
       
-      const photoScansLimit =
-        userData.subscriptionTier === 'pro'
-          ? PRO_PHOTO_LIMIT
-          : userData.subscriptionTier === 'plus'
-            ? PLUS_PHOTO_LIMIT
-            : userData.photoScansLimit || FREE_PHOTO_LIMIT;
-      const photoScansUsed = userData.photoScansUsed || 0;
+      const reservation = await db.runTransaction(async (transaction) => {
+        const snapshot = await transaction.get(userRef);
+        const data = snapshot.data() || {};
+        const tier = data.subscriptionTier || userData.subscriptionTier || 'free';
+        const limit =
+          tier === 'pro'
+            ? PRO_PHOTO_LIMIT
+            : tier === 'plus'
+              ? PLUS_PHOTO_LIMIT
+              : data.photoScansLimit || FREE_PHOTO_LIMIT;
+        const used = data.photoScansUsed || 0;
+
+        if (used >= limit) {
+          return {
+            canProceed: false,
+            used,
+            limit,
+            tier,
+          };
+        }
+
+        transaction.update(userRef, {
+          photoScansUsed: used + 1,
+        });
+
+        return {
+          canProceed: true,
+          usedAfter: used + 1,
+          limit,
+          tier,
+        };
+      });
 
       console.log('📊 User data:', {
-        subscriptionTier: userData.subscriptionTier,
-        photoScansUsed,
-        photoScansLimit,
-        remainingScans: photoScansLimit - photoScansUsed,
+        subscriptionTier: reservation.tier,
+        photoScansUsed: reservation.canProceed ? reservation.usedAfter : reservation.used,
+        photoScansLimit: reservation.limit,
+        remainingScans: reservation.limit - (reservation.canProceed ? reservation.usedAfter : reservation.used),
       });
 
       // Check limit (all tiers capped monthly)
-      if (photoScansUsed >= photoScansLimit) {
+      if (!reservation.canProceed) {
         console.error('❌ Photo scans limit exceeded');
         throw new HttpsError(
           'resource-exhausted',
-          `PHOTO_SCANS_LIMIT_REACHED:${photoScansLimit}:${userData.subscriptionTier}`,
+          `PHOTO_SCANS_LIMIT_REACHED:${reservation.limit}:${reservation.tier}`,
           {
-            limit: photoScansLimit,
-            used: photoScansUsed,
-            tier: userData.subscriptionTier,
+            limit: reservation.limit,
+            used: reservation.used,
+            tier: reservation.tier,
           }
         );
       }
@@ -525,7 +550,6 @@ exports.callClaudeVision = onCall(
       // ✅ Update usage
       console.log('💾 Updating photo scan usage...');
       await userRef.update({
-        photoScansUsed: admin.firestore.FieldValue.increment(1),
         lifetimeAPIRequests: admin.firestore.FieldValue.increment(1),
         monthlyTokens: admin.firestore.FieldValue.increment(
           result.usage.input_tokens + result.usage.output_tokens
@@ -547,7 +571,7 @@ exports.callClaudeVision = onCall(
         totalTokens: result.usage.input_tokens + result.usage.output_tokens,
         cost: estimatedCost,
         durationMs: apiDuration,
-        subscriptionTier: userData.subscriptionTier,
+        subscriptionTier: reservation.tier,
       });
 
       console.log('✅ Photo scan completed successfully');
@@ -556,7 +580,7 @@ exports.callClaudeVision = onCall(
         markdown: textContent,
         usage: result.usage,
         photoType: photoType,
-        remainingScans: Math.max(0, photoScansLimit - (photoScansUsed + 1)),
+        remainingScans: Math.max(0, reservation.limit - reservation.usedAfter),
       };
 
     } catch (error) {
@@ -739,22 +763,47 @@ exports.callWhisperProxy = onCall(
       let userData = await ensureUserDocument(db, userId, deviceID);
       userData = await ensureMonthlyVoiceReset(userRef, userData);
 
-      const voiceActionsLimit =
-        userData.subscriptionTier === 'pro'
-          ? PRO_VOICE_LIMIT
-          : userData.subscriptionTier === 'plus'
-            ? PLUS_VOICE_LIMIT
-            : userData.voiceActionsLimit || FREE_VOICE_LIMIT;
-      const voiceActionsUsed = userData.voiceActionsUsed || 0;
+      const reservation = await db.runTransaction(async (transaction) => {
+        const snapshot = await transaction.get(userRef);
+        const data = snapshot.data() || {};
+        const tier = data.subscriptionTier || userData.subscriptionTier || 'free';
+        const limit =
+          tier === 'pro'
+            ? PRO_VOICE_LIMIT
+            : tier === 'plus'
+              ? PLUS_VOICE_LIMIT
+              : data.voiceActionsLimit || FREE_VOICE_LIMIT;
+        const used = data.voiceActionsUsed || 0;
 
-      if (voiceActionsUsed >= voiceActionsLimit) {
+        if (used >= limit) {
+          return {
+            canProceed: false,
+            used,
+            limit,
+            tier,
+          };
+        }
+
+        transaction.update(userRef, {
+          voiceActionsUsed: used + 1,
+        });
+
+        return {
+          canProceed: true,
+          usedAfter: used + 1,
+          limit,
+          tier,
+        };
+      });
+
+      if (!reservation.canProceed) {
         throw new HttpsError(
           'resource-exhausted',
-          `VOICE_ACTIONS_LIMIT_REACHED:${voiceActionsLimit}:${userData.subscriptionTier}`,
+          `VOICE_ACTIONS_LIMIT_REACHED:${reservation.limit}:${reservation.tier}`,
           {
-            limit: voiceActionsLimit,
-            used: voiceActionsUsed,
-            tier: userData.subscriptionTier,
+            limit: reservation.limit,
+            used: reservation.used,
+            tier: reservation.tier,
           }
         );
       }
@@ -801,7 +850,6 @@ exports.callWhisperProxy = onCall(
 
       // ✅ Update usage for Whisper
       await userRef.update({
-        voiceActionsUsed: admin.firestore.FieldValue.increment(1),
         lifetimeAPIRequests: admin.firestore.FieldValue.increment(1),
         lastRequestAt: admin.firestore.FieldValue.serverTimestamp(),
       });
@@ -815,13 +863,13 @@ exports.callWhisperProxy = onCall(
         cost: parseFloat(estimatedCost.toFixed(6)),
         textLength: result.text?.length,
         durationMs: apiDuration,
-        subscriptionTier: userData.subscriptionTier,
+        subscriptionTier: reservation.tier,
       });
 
       return {
         text: result.text,
-        remainingTranscriptions: Math.max(0, voiceActionsLimit - (voiceActionsUsed + 1)),
-        remainingRequests: Math.max(0, voiceActionsLimit - (voiceActionsUsed + 1)),
+        remainingTranscriptions: Math.max(0, reservation.limit - reservation.usedAfter),
+        remainingRequests: Math.max(0, reservation.limit - reservation.usedAfter),
       };
 
     } catch (error) {
