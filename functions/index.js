@@ -6,6 +6,7 @@ const axios = require('axios');
 const FormData = require('form-data');
 const jwt = require('jsonwebtoken');
 const fetch = require('node-fetch');
+const crypto = require('crypto');
 const { importX509, importJWK, jwtVerify } = require('jose');
 
 // Initialize Firebase Admin
@@ -40,6 +41,8 @@ const KNOWN_VERIFY_TARGET_PRODUCT_IDS = new Set([
 const COLLECTION_APPLE_SUBSCRIPTIONS = 'appleSubscriptions';
 /** Firestore: idempotency for ASSN v2 `notificationUUID`. */
 const COLLECTION_ASSN_PROCESSED = 'assnProcessedNotifications';
+/** Free-tier usage keyed by hashed physical device id (persists across uid rotation / reinstall). */
+const COLLECTION_DEVICE_FREE_USAGE = 'deviceFreeUsage';
 
 const SUBSCRIPTION_TIER_ORDER = { free: 0, plus: 1, pro: 2 };
 
@@ -310,6 +313,85 @@ async function handleAppStoreServerNotification(db, signedPayload) {
 
 const getMonthKey = () => new Date().toISOString().slice(0, 7); // UTC YYYY-MM
 
+/**
+ * Hash deviceID for Firestore doc id (client sends a stable Keychain-backed identifier).
+ */
+function hashDeviceId(deviceID) {
+  if (!deviceID || deviceID === 'unknown') {
+    throw new Error('Invalid deviceID for hashing');
+  }
+  return crypto.createHash('sha256').update(String(deviceID)).digest('hex');
+}
+
+/**
+ * Ensure deviceFreeUsage document exists for this physical device.
+ */
+async function ensureDeviceFreeUsage(db, deviceID) {
+  const deviceHash = hashDeviceId(deviceID);
+  const deviceRef = db.collection(COLLECTION_DEVICE_FREE_USAGE).doc(deviceHash);
+  const snap = await deviceRef.get();
+
+  if (!snap.exists) {
+    const now = admin.firestore.FieldValue.serverTimestamp();
+    await deviceRef.set({
+      deviceIdHash: deviceHash,
+      voiceActionsUsed: 0,
+      photoScansUsed: 0,
+      voiceActionsDayKey: null,
+      photoScansDayKey: null,
+      createdAt: now,
+      updatedAt: now,
+    });
+    console.log(`📱 Created deviceFreeUsage doc: ${deviceHash.substring(0, 8)}…`);
+  }
+
+  return deviceRef;
+}
+
+async function ensureMonthlyVoiceResetForDevice(deviceRef, deviceData) {
+  const monthKey = getMonthKey();
+  const data = deviceData || {};
+  if (data.voiceActionsDayKey === monthKey) {
+    return data;
+  }
+
+  await deviceRef.update({
+    voiceActionsUsed: 0,
+    voiceActionsDayKey: monthKey,
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  });
+  console.log(`🔄 Monthly voice reset for device: ${deviceRef.id.substring(0, 8)}…`);
+  return { ...data, voiceActionsUsed: 0, voiceActionsDayKey: monthKey };
+}
+
+async function ensureMonthlyPhotoResetForDevice(deviceRef, deviceData) {
+  const monthKey = getMonthKey();
+  const data = deviceData || {};
+  if (data.photoScansDayKey === monthKey) {
+    return data;
+  }
+
+  await deviceRef.update({
+    photoScansUsed: 0,
+    photoScansDayKey: monthKey,
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  });
+  console.log(`🔄 Monthly photo reset for device: ${deviceRef.id.substring(0, 8)}…`);
+  return { ...data, photoScansUsed: 0, photoScansDayKey: monthKey };
+}
+
+/** Load free-tier counters for a device (monthly resets applied). */
+async function loadDeviceFreeUsage(db, deviceID) {
+  if (!deviceID || deviceID === 'unknown') {
+    return null;
+  }
+  const deviceRef = await ensureDeviceFreeUsage(db, deviceID);
+  let deviceData = (await deviceRef.get()).data() || {};
+  deviceData = await ensureMonthlyVoiceResetForDevice(deviceRef, deviceData);
+  deviceData = await ensureMonthlyPhotoResetForDevice(deviceRef, deviceData);
+  return { deviceRef, deviceData };
+}
+
 /** Expect SHA256 hex (64 chars) from iOS ``ICloudIdentityProvider`` — reject anything else. */
 function normalizeICloudId(raw) {
   if (raw == null) return null;
@@ -451,10 +533,16 @@ async function syncSubscriptionTierFromICloudPeers(db, userRef, userData, iCloud
 }
 
 /**
- * Usage limits: free tier is per-device only; paid tiers aggregate across iCloud-linked docs.
+ * Usage limits: free tier reads deviceFreeUsage/{deviceHash}; paid tiers aggregate iCloud peers.
  * Non-transactional read; slight race acceptable before reservation transaction.
  */
-async function evaluateAggregatedUsageLimit(db, { iCloudID, usageField, userData, limitForTier }) {
+async function evaluateAggregatedUsageLimit(db, {
+  iCloudID,
+  usageField,
+  userData,
+  limitForTier,
+  deviceID,
+}) {
   const currentTier = userData.subscriptionTier || 'free';
   const docs = iCloudID ? await queryUserDocsByICloudID(db, iCloudID) : [];
   const effectiveTier = docs.length > 0
@@ -462,9 +550,31 @@ async function evaluateAggregatedUsageLimit(db, { iCloudID, usageField, userData
     : currentTier;
 
   if (effectiveTier === 'free') {
+    if (!deviceID || deviceID === 'unknown') {
+      console.warn('⚠️ No valid deviceID for free tier limit check — falling back to uid-based');
+      const limit = limitForTier('free');
+      const used = userData[usageField] || 0;
+      return {
+        canProceed: used < limit,
+        totalUsed: used,
+        limit,
+        tier: 'free',
+        deviceRef: null,
+      };
+    }
+
+    const loaded = await loadDeviceFreeUsage(db, deviceID);
     const limit = limitForTier('free');
-    const used = userData[usageField] || 0;
-    return { canProceed: used < limit, totalUsed: used, limit, tier: 'free' };
+    const used = loaded.deviceData[usageField] || 0;
+    console.log(`📱 Free tier limit check: ${usageField}=${used}/${limit}, canProceed=${used < limit}`);
+
+    return {
+      canProceed: used < limit,
+      totalUsed: used,
+      limit,
+      tier: 'free',
+      deviceRef: loaded.deviceRef,
+    };
   }
 
   const limit = limitForTier(effectiveTier);
@@ -472,11 +582,14 @@ async function evaluateAggregatedUsageLimit(db, { iCloudID, usageField, userData
     ? sumUsageFieldAcrossDocs(docs, usageField)
     : (userData[usageField] || 0);
 
+  console.log(`☁️ Paid tier limit check: ${usageField}=${totalUsed}/${limit} (iCloud aggregate), tier=${effectiveTier}`);
+
   return {
     canProceed: totalUsed < limit,
     totalUsed,
     limit,
     tier: effectiveTier,
+    deviceRef: null,
   };
 }
 
@@ -800,6 +913,7 @@ exports.callClaudeVision = onCall(
         usageField: 'photoScansUsed',
         userData,
         limitForTier: photoLimitForTier,
+        deviceID,
       });
 
       if (!aggregateCheck.canProceed) {
@@ -816,6 +930,27 @@ exports.callClaudeVision = onCall(
       }
 
       const reservation = await db.runTransaction(async (transaction) => {
+        if (aggregateCheck.tier === 'free' && aggregateCheck.deviceRef) {
+          const deviceSnap = await transaction.get(aggregateCheck.deviceRef);
+          const deviceData = deviceSnap.data() || {};
+          const used = deviceData.photoScansUsed || 0;
+
+          transaction.update(aggregateCheck.deviceRef, {
+            photoScansUsed: used + 1,
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          });
+
+          console.log(`📱 Free tier: incremented device photo usage ${used} → ${used + 1}`);
+
+          return {
+            canProceed: true,
+            usedAfter: used + 1,
+            aggregateUsedAfter: used + 1,
+            limit: aggregateCheck.limit,
+            tier: aggregateCheck.tier,
+          };
+        }
+
         const snapshot = await transaction.get(userRef);
         const data = snapshot.data() || {};
         const used = data.photoScansUsed || 0;
@@ -823,6 +958,8 @@ exports.callClaudeVision = onCall(
         transaction.update(userRef, {
           photoScansUsed: used + 1,
         });
+
+        console.log(`☁️ Paid tier: incremented user photo usage ${used} → ${used + 1}`);
 
         return {
           canProceed: true,
@@ -1171,6 +1308,7 @@ exports.callWhisperProxy = onCall(
         usageField: 'voiceActionsUsed',
         userData,
         limitForTier: voiceLimitForTier,
+        deviceID,
       });
 
       if (!aggregateCheck.canProceed) {
@@ -1186,6 +1324,27 @@ exports.callWhisperProxy = onCall(
       }
 
       const reservation = await db.runTransaction(async (transaction) => {
+        if (aggregateCheck.tier === 'free' && aggregateCheck.deviceRef) {
+          const deviceSnap = await transaction.get(aggregateCheck.deviceRef);
+          const deviceData = deviceSnap.data() || {};
+          const used = deviceData.voiceActionsUsed || 0;
+
+          transaction.update(aggregateCheck.deviceRef, {
+            voiceActionsUsed: used + 1,
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          });
+
+          console.log(`📱 Free tier: incremented device voice usage ${used} → ${used + 1}`);
+
+          return {
+            canProceed: true,
+            usedAfter: used + 1,
+            aggregateUsedAfter: used + 1,
+            limit: aggregateCheck.limit,
+            tier: aggregateCheck.tier,
+          };
+        }
+
         const snapshot = await transaction.get(userRef);
         const data = snapshot.data() || {};
         const used = data.voiceActionsUsed || 0;
@@ -1193,6 +1352,8 @@ exports.callWhisperProxy = onCall(
         transaction.update(userRef, {
           voiceActionsUsed: used + 1,
         });
+
+        console.log(`☁️ Paid tier: incremented user voice usage ${used} → ${used + 1}`);
 
         return {
           canProceed: true,
@@ -1326,8 +1487,18 @@ exports.getUserUsage = onCall({region: 'us-central1'}, async (request) => {
   let voiceActionsUsed;
   let photoScansUsed;
   if (effectiveTier === 'free') {
-    voiceActionsUsed = userData.voiceActionsUsed || 0;
-    photoScansUsed = userData.photoScansUsed || 0;
+    if (!deviceID || deviceID === 'unknown') {
+      console.warn('⚠️ No valid deviceID for free tier usage — falling back to uid-based');
+      voiceActionsUsed = userData.voiceActionsUsed || 0;
+      photoScansUsed = userData.photoScansUsed || 0;
+    } else {
+      const loaded = await loadDeviceFreeUsage(db, deviceID);
+      voiceActionsUsed = loaded.deviceData.voiceActionsUsed || 0;
+      photoScansUsed = loaded.deviceData.photoScansUsed || 0;
+      console.log(
+        `📱 Free tier usage from device: voice=${voiceActionsUsed}/${voiceActionsLimit}, photo=${photoScansUsed}/${photoScansLimit}`
+      );
+    }
   } else {
     voiceActionsUsed = iCloudDocs.length > 0
       ? sumUsageFieldAcrossDocs(iCloudDocs, 'voiceActionsUsed')
@@ -1335,6 +1506,9 @@ exports.getUserUsage = onCall({region: 'us-central1'}, async (request) => {
     photoScansUsed = iCloudDocs.length > 0
       ? sumUsageFieldAcrossDocs(iCloudDocs, 'photoScansUsed')
       : (userData.photoScansUsed || 0);
+    console.log(
+      `☁️ Paid tier usage (iCloud aggregate): voice=${voiceActionsUsed}/${voiceActionsLimit}, photo=${photoScansUsed}/${photoScansLimit}`
+    );
   }
 
   return {

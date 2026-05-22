@@ -2,6 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const crypto = require('crypto');
 
 // Pure helpers mirrored from index.js for unit tests (keep in sync manually).
 const SUBSCRIPTION_TIER_ORDER = { free: 0, plus: 1, pro: 2 };
@@ -60,8 +61,21 @@ function evaluateAggregatedUsageLimitSync({ docs, usageField, userData, limitFor
   };
 }
 
-function resolveUsageCountsForDisplay({ effectiveTier, userData, iCloudDocs }) {
+function hashDeviceId(deviceID) {
+  if (!deviceID || deviceID === 'unknown') {
+    throw new Error('Invalid deviceID for hashing');
+  }
+  return crypto.createHash('sha256').update(String(deviceID)).digest('hex');
+}
+
+function resolveUsageCountsForDisplay({ effectiveTier, userData, iCloudDocs, deviceFreeUsage }) {
   if (effectiveTier === 'free') {
+    if (deviceFreeUsage) {
+      return {
+        voiceActionsUsed: deviceFreeUsage.voiceActionsUsed || 0,
+        photoScansUsed: deviceFreeUsage.photoScansUsed || 0,
+      };
+    }
     return {
       voiceActionsUsed: userData.voiceActionsUsed || 0,
       photoScansUsed: userData.photoScansUsed || 0,
@@ -169,8 +183,20 @@ test('resolveUsageCountsForDisplay free tier ignores peer counters', () => {
     effectiveTier: 'free',
     userData: { voiceActionsUsed: 3, photoScansUsed: 1 },
     iCloudDocs: docs,
+    deviceFreeUsage: { voiceActionsUsed: 5, photoScansUsed: 2 },
   });
-  assert.deepEqual(counts, { voiceActionsUsed: 3, photoScansUsed: 1 });
+  assert.deepEqual(counts, { voiceActionsUsed: 5, photoScansUsed: 2 });
+});
+
+test('hashDeviceId produces stable sha256 hex', () => {
+  const a = hashDeviceId('device-abc-123');
+  const b = hashDeviceId('device-abc-123');
+  assert.equal(a, b);
+  assert.match(a, /^[a-f0-9]{64}$/);
+});
+
+test('hashDeviceId rejects unknown device id', () => {
+  assert.throws(() => hashDeviceId('unknown'), /Invalid deviceID/);
 });
 
 test('resolveUsageCountsForDisplay paid tier sums peer counters', () => {
