@@ -41,6 +41,34 @@ const COLLECTION_APPLE_SUBSCRIPTIONS = 'appleSubscriptions';
 /** Firestore: idempotency for ASSN v2 `notificationUUID`. */
 const COLLECTION_ASSN_PROCESSED = 'assnProcessedNotifications';
 
+const SUBSCRIPTION_TIER_ORDER = { free: 0, plus: 1, pro: 2 };
+
+/** True only for paid tier increases (free→plus, plus→pro, free→pro). Downgrades do not reset usage. */
+function isSubscriptionTierUpgrade(fromTier, toTier) {
+  const from = String(fromTier || 'free');
+  const to = String(toTier || 'free');
+  return (SUBSCRIPTION_TIER_ORDER[to] ?? 0) > (SUBSCRIPTION_TIER_ORDER[from] ?? 0);
+}
+
+function voiceLimitForTier(tier) {
+  if (tier === 'pro') return PRO_VOICE_LIMIT;
+  if (tier === 'plus') return PLUS_VOICE_LIMIT;
+  return FREE_VOICE_LIMIT;
+}
+
+function photoLimitForTier(tier) {
+  if (tier === 'pro') return PRO_PHOTO_LIMIT;
+  if (tier === 'plus') return PLUS_PHOTO_LIMIT;
+  return FREE_PHOTO_LIMIT;
+}
+
+function usageLimitsForTier(tier) {
+  return {
+    voiceActionsLimit: voiceLimitForTier(tier),
+    photoScansLimit: photoLimitForTier(tier),
+  };
+}
+
 // ═══════════════════════════════════════════════════════
 // StoreKit / ASSN helpers
 // ═══════════════════════════════════════════════════════
@@ -137,47 +165,48 @@ function buildUserSubscriptionFields(transactionPayload) {
   return out;
 }
 
-async function applySubscriptionToUserDoc(userRef, transactionPayload) {
+async function applySubscriptionToUserDoc(userRef, transactionPayload, db = null) {
   const fields = buildUserSubscriptionFields(transactionPayload);
   const currentSnap = await userRef.get();
-  const currentTier = currentSnap.exists
-    ? String(currentSnap.data().subscriptionTier || 'free')
-    : 'free';
+  const currentData = currentSnap.exists ? (currentSnap.data() || {}) : {};
+  const currentTier = String(currentData.subscriptionTier || 'free');
   const newTier = String(fields.subscriptionTier || 'free');
-  const tierOrder = { free: 0, plus: 1, pro: 2 };
-  /** Reset usage limits when tier actually changes (upgrade, downgrade/correction, or free). */
   const tierChanged = newTier !== currentTier;
+  const isUpgrade = isSubscriptionTierUpgrade(currentTier, newTier);
+
   if (tierChanged) {
+    Object.assign(fields, usageLimitsForTier(newTier));
+  }
+  if (isUpgrade) {
     fields.voiceActionsUsed = 0;
     fields.photoScansUsed = 0;
-    const newVoiceLimit = newTier === 'pro'
-      ? PRO_VOICE_LIMIT
-      : (newTier === 'plus' ? PLUS_VOICE_LIMIT : FREE_VOICE_LIMIT);
-    const newPhotoLimit = newTier === 'pro'
-      ? PRO_PHOTO_LIMIT
-      : (newTier === 'plus' ? PLUS_PHOTO_LIMIT : FREE_PHOTO_LIMIT);
-    fields.voiceActionsLimit = newVoiceLimit;
-    fields.photoScansLimit = newPhotoLimit;
+    fields.lastUsageResetDate = admin.firestore.FieldValue.serverTimestamp();
   }
-  const pendingProductId = currentSnap.exists
-    ? String(currentSnap.data().pendingUpgradeProductId || '')
-    : '';
+
+  const pendingProductId = String(currentData.pendingUpgradeProductId || '');
   if (pendingProductId) {
     const pendingTier = pendingProductId.includes('pro')
       ? 'pro'
       : (pendingProductId.includes('plus') ? 'plus' : 'free');
-    if ((tierOrder[newTier] || 0) >= (tierOrder[pendingTier] || 0)) {
+    if ((SUBSCRIPTION_TIER_ORDER[newTier] || 0) >= (SUBSCRIPTION_TIER_ORDER[pendingTier] || 0)) {
       fields.pendingUpgradeProductId = admin.firestore.FieldValue.delete();
       fields.pendingUpgradeAt = admin.firestore.FieldValue.delete();
     }
   }
   console.log(
-    `[SUB_TIER] uid=${userRef.id} ${currentTier} → ${newTier}, tierChanged=${tierChanged}`
+    `[SUB_TIER] uid=${userRef.id} ${currentTier} → ${newTier}, tierChanged=${tierChanged}, isUpgrade=${isUpgrade}`
   );
   console.log(
-    `[LIMITS] voice=${fields.voiceActionsLimit}, photo=${fields.photoScansLimit}`
+    `[LIMITS] voice=${fields.voiceActionsLimit ?? currentData.voiceActionsLimit}, photo=${fields.photoScansLimit ?? currentData.photoScansLimit}`
   );
   await userRef.set(fields, { merge: true });
+
+  if (isUpgrade && db) {
+    const iCloudID = normalizeICloudId(currentData.iCloudID);
+    if (iCloudID) {
+      await resetUsageCountersOnICloudPeers(db, iCloudID, userRef.id, newTier);
+    }
+  }
 }
 
 /**
@@ -265,7 +294,7 @@ async function handleAppStoreServerNotification(db, signedPayload) {
     console.warn('ASSN: user doc missing for uid=', firebaseUid);
   }
 
-  await applySubscriptionToUserDoc(userRef, txPayload);
+  await applySubscriptionToUserDoc(userRef, txPayload, db);
 
   await processedRef.set({
     notificationType,
@@ -293,20 +322,6 @@ function normalizeICloudId(raw) {
   return s;
 }
 
-const SUBSCRIPTION_TIER_ORDER = { free: 0, plus: 1, pro: 2 };
-
-function voiceLimitForTier(tier) {
-  if (tier === 'pro') return PRO_VOICE_LIMIT;
-  if (tier === 'plus') return PLUS_VOICE_LIMIT;
-  return FREE_VOICE_LIMIT;
-}
-
-function photoLimitForTier(tier) {
-  if (tier === 'pro') return PRO_PHOTO_LIMIT;
-  if (tier === 'plus') return PLUS_PHOTO_LIMIT;
-  return FREE_PHOTO_LIMIT;
-}
-
 function highestSubscriptionTier(tierA, tierB) {
   const a = SUBSCRIPTION_TIER_ORDER[tierA] ?? 0;
   const b = SUBSCRIPTION_TIER_ORDER[tierB] ?? 0;
@@ -317,6 +332,43 @@ async function queryUserDocsByICloudID(db, iCloudID) {
   if (!iCloudID) return [];
   const snapshot = await db.collection('users').where('iCloudID', '==', iCloudID).get();
   return snapshot.docs;
+}
+
+/**
+ * On tier upgrade, UI aggregates `voiceActionsUsed` / `photoScansUsed` across all users/* with the same iCloudID.
+ * Reset every peer doc so 10/10 free on phone + 0 on iPad does not become 10/50 after Plus purchase.
+ */
+async function resetUsageCountersOnICloudPeers(db, iCloudID, upgradedUid, newTier) {
+  try {
+    const docs = await queryUserDocsByICloudID(db, iCloudID);
+    if (docs.length === 0) return;
+
+    const limits = usageLimitsForTier(newTier);
+    const resetFields = {
+      voiceActionsUsed: 0,
+      photoScansUsed: 0,
+      voiceActionsLimit: limits.voiceActionsLimit,
+      photoScansLimit: limits.photoScansLimit,
+      lastUsageResetDate: admin.firestore.FieldValue.serverTimestamp(),
+    };
+
+    const peersToReset = docs.filter((doc) => doc.id !== upgradedUid);
+    if (peersToReset.length === 0) return;
+
+    for (let i = 0; i < peersToReset.length; i += 400) {
+      const batch = db.batch();
+      peersToReset.slice(i, i + 400).forEach((doc) => {
+        batch.set(doc.ref, resetFields, { merge: true });
+      });
+      await batch.commit();
+    }
+
+    console.log(
+      `☁️ Usage reset on upgrade (${newTier}): cleared ${peersToReset.length} iCloud peer doc(s), uid=${upgradedUid.substring(0, 8)}…`
+    );
+  } catch (err) {
+    console.error(`☁️ resetUsageCountersOnICloudPeers failed: ${err.message}`);
+  }
 }
 
 function sumUsageFieldAcrossDocs(docs, field) {
@@ -1385,7 +1437,7 @@ exports.verifySubscription = onCall(
         }
       }
 
-      await applySubscriptionToUserDoc(userRef, effectivePayload);
+      await applySubscriptionToUserDoc(userRef, effectivePayload, db);
       await saveAppleSubscriptionMapping(db, userId, effectivePayload);
 
       const updatedSnap = await userRef.get();
