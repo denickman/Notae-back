@@ -339,6 +339,9 @@ async function queryUserDocsByICloudID(db, iCloudID) {
  * Reset every peer doc so 10/10 free on phone + 0 on iPad does not become 10/50 after Plus purchase.
  */
 async function resetUsageCountersOnICloudPeers(db, iCloudID, upgradedUid, newTier) {
+  if (!newTier || newTier === 'free') {
+    return;
+  }
   try {
     const docs = await queryUserDocsByICloudID(db, iCloudID);
     if (docs.length === 0) return;
@@ -448,13 +451,22 @@ async function syncSubscriptionTierFromICloudPeers(db, userRef, userData, iCloud
 }
 
 /**
- * Aggregate usage across all users/* docs for an iCloudID (non-transactional; slight race acceptable).
+ * Usage limits: free tier is per-device only; paid tiers aggregate across iCloud-linked docs.
+ * Non-transactional read; slight race acceptable before reservation transaction.
  */
 async function evaluateAggregatedUsageLimit(db, { iCloudID, usageField, userData, limitForTier }) {
+  const currentTier = userData.subscriptionTier || 'free';
   const docs = iCloudID ? await queryUserDocsByICloudID(db, iCloudID) : [];
   const effectiveTier = docs.length > 0
-    ? resolveEffectiveTierFromDocs(docs, userData.subscriptionTier || 'free')
-    : (userData.subscriptionTier || 'free');
+    ? resolveEffectiveTierFromDocs(docs, currentTier)
+    : currentTier;
+
+  if (effectiveTier === 'free') {
+    const limit = limitForTier('free');
+    const used = userData[usageField] || 0;
+    return { canProceed: used < limit, totalUsed: used, limit, tier: 'free' };
+  }
+
   const limit = limitForTier(effectiveTier);
   const totalUsed = docs.length > 0
     ? sumUsageFieldAcrossDocs(docs, usageField)
@@ -542,7 +554,8 @@ async function migrateFromPreviousICloudSession(db, currentRef, currentUid, iClo
       return;
     }
 
-    const keysToCopy = [
+    const donorTier = donor.data.subscriptionTier || 'free';
+    let keysToCopy = [
       'subscriptionTier',
       'subscriptionProductId',
       'subscriptionExpiresAt',
@@ -550,16 +563,22 @@ async function migrateFromPreviousICloudSession(db, currentRef, currentUid, iClo
       'subscriptionVerifiedAt',
       'pendingUpgradeProductId',
       'pendingUpgradeAt',
-      'voiceActionsUsed',
-      'voiceActionsLimit',
-      'voiceActionsDayKey',
-      'photoScansUsed',
-      'photoScansLimit',
-      'photoScansDayKey',
       'lifetimeAPIRequests',
       'monthlyTokens',
       'lastRequestAt',
     ];
+
+    // Free-tier usage is per-device; only migrate counters from a paid donor.
+    if (donorTier !== 'free') {
+      keysToCopy.push(
+        'voiceActionsUsed',
+        'voiceActionsLimit',
+        'voiceActionsDayKey',
+        'photoScansUsed',
+        'photoScansLimit',
+        'photoScansDayKey',
+      );
+    }
 
     const payload = {};
     for (const key of keysToCopy) {
@@ -1300,15 +1319,23 @@ exports.getUserUsage = onCall({region: 'us-central1'}, async (request) => {
 
   const iCloudDocs = sessionICloudID ? await queryUserDocsByICloudID(db, sessionICloudID) : [];
 
-  const voiceActionsLimit = voiceLimitForTier(userData.subscriptionTier || 'free');
-  const photoScansLimit = photoLimitForTier(userData.subscriptionTier || 'free');
+  const effectiveTier = userData.subscriptionTier || 'free';
+  const voiceActionsLimit = voiceLimitForTier(effectiveTier);
+  const photoScansLimit = photoLimitForTier(effectiveTier);
 
-  const voiceActionsUsed = iCloudDocs.length > 0
-    ? sumUsageFieldAcrossDocs(iCloudDocs, 'voiceActionsUsed')
-    : (userData.voiceActionsUsed || 0);
-  const photoScansUsed = iCloudDocs.length > 0
-    ? sumUsageFieldAcrossDocs(iCloudDocs, 'photoScansUsed')
-    : (userData.photoScansUsed || 0);
+  let voiceActionsUsed;
+  let photoScansUsed;
+  if (effectiveTier === 'free') {
+    voiceActionsUsed = userData.voiceActionsUsed || 0;
+    photoScansUsed = userData.photoScansUsed || 0;
+  } else {
+    voiceActionsUsed = iCloudDocs.length > 0
+      ? sumUsageFieldAcrossDocs(iCloudDocs, 'voiceActionsUsed')
+      : (userData.voiceActionsUsed || 0);
+    photoScansUsed = iCloudDocs.length > 0
+      ? sumUsageFieldAcrossDocs(iCloudDocs, 'photoScansUsed')
+      : (userData.photoScansUsed || 0);
+  }
 
   return {
     // Voice transcriptions
