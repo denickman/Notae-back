@@ -479,8 +479,8 @@
                 </tr>
                 <tr>
                     <td><strong>Voice Recordings</strong><br>Audio files you create</td>
-                    <td>AI transcription via Whisper, storage, sync across devices</td>
-                    <td>Yes (for transcription)</td>
+                    <td>AI transcription via Whisper (Enhanced mode, cloud) or Apple Speech (Simple mode, on-device), storage, sync across devices</td>
+                    <td>Yes (Enhanced mode only — Simple mode stays on device)</td>
                 </tr>
                 <tr>
                     <td><strong>Text Content</strong><br>Notes, titles, tags, folders</td>
@@ -489,8 +489,8 @@
                 </tr>
                 <tr>
                     <td><strong>Photos</strong><br>Images you upload</td>
-                    <td>Photo scanning via Claude Vision, text extraction</td>
-                    <td>Optional</td>
+                    <td>Photo scanning via Claude Vision (Enhanced mode, cloud) or Apple Vision OCR (Simple mode, on-device), text extraction</td>
+                    <td>Optional (Enhanced mode only — Simple mode stays on device)</td>
                 </tr>
                 <tr>
                     <td><strong>Payment Information</strong><br>Handled by Apple</td>
@@ -506,7 +506,7 @@
                     <th>Purpose</th>
                 </tr>
                 <tr>
-                    <td><strong>Device Information</strong><br>Device model, iOS version, unique device identifier</td>
+                    <td><strong>Device Information</strong><br>Device model, iOS version, unique device identifier (stored in Keychain, hashed with SHA-256 for free tier usage tracking)</td>
                     <td>Compatibility, bug tracking, support</td>
                 </tr>
                 <tr>
@@ -556,7 +556,7 @@
 
             <div class="alert alert-info">
                 <strong>Important AI Disclosure</strong>
-                <p>The Application uses artificial intelligence technologies that process your data through third-party services. By using AI features, you consent to this processing.</p>
+                <p>The Application uses artificial intelligence technologies. In "Enhanced" mode, your data is processed through third-party cloud services (OpenAI Whisper, Anthropic Claude). In "Simple" mode, processing happens entirely on your device using Apple Speech Recognition and Apple Vision OCR — no data leaves your device. By using AI features, you consent to this processing.</p>
             </div>
 
             <table class="doc-table">
@@ -568,9 +568,15 @@
                 </tr>
                 <tr>
                     <td><strong>OpenAI Whisper</strong></td>
-                    <td>Voice transcription</td>
+                    <td>Voice transcription (Enhanced mode)</td>
                     <td>Audio recordings</td>
                     <td><a href="https://openai.com/privacy" target="_blank">OpenAI Privacy ↗</a></td>
+                </tr>
+                <tr>
+                    <td><strong>Apple Speech Recognition</strong></td>
+                    <td>Voice transcription (Simple mode)</td>
+                    <td>Audio processed on-device only — no data sent to external servers</td>
+                    <td><a href="https://www.apple.com/legal/privacy/" target="_blank">Apple Privacy ↗</a></td>
                 </tr>
                 <tr>
                     <td><strong>Anthropic Claude</strong></td>
@@ -580,9 +586,15 @@
                 </tr>
                 <tr>
                     <td><strong>Claude Vision</strong></td>
-                    <td>Photo scanning, text extraction</td>
+                    <td>Photo scanning, text extraction (Enhanced mode)</td>
                     <td>Images you upload</td>
                     <td><a href="https://www.anthropic.com/legal/privacy" target="_blank">Anthropic Privacy ↗</a></td>
+                </tr>
+                <tr>
+                    <td><strong>Apple Vision OCR</strong></td>
+                    <td>Photo text extraction (Simple mode)</td>
+                    <td>Images processed on-device only — no data sent to external servers</td>
+                    <td><a href="https://www.apple.com/legal/privacy/" target="_blank">Apple Privacy ↗</a></td>
                 </tr>
                 <tr>
                     <td><strong>Firebase Auth</strong></td>
@@ -606,7 +618,7 @@
             <ul>
                 <li><strong>Primary Storage:</strong> Apple CloudKit (iCloud servers, encrypted)</li>
                 <li><strong>Local Storage:</strong> On your iOS device (encrypted when device is locked)</li>
-                <li><strong>Firebase:</strong> Anonymous authentication tokens, usage statistics (Google Cloud)</li>
+                <li><strong>Firebase:</strong> Anonymous authentication tokens, usage statistics, device-based free tier usage tracking via hashed device identifier (Google Cloud)</li>
             </ul>
 
             <h3>5.2 Security Measures</h3>
