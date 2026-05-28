@@ -104,6 +104,28 @@ function migrationUsageKeysForDonorTier(donorTier) {
   return baseKeys;
 }
 
+function isUserDocSuperseded(data) {
+  const by = data?.supersededBy;
+  return by != null && String(by).trim() !== '';
+}
+
+function filterActiveICloudPeerDocs(docs) {
+  return docs.filter((doc) => !isUserDocSuperseded(doc.data()));
+}
+
+function isSafeToDeleteSupersededUser(data, cutoffDate) {
+  if (!isUserDocSuperseded(data)) {
+    return false;
+  }
+  const supersededAt = data.supersededAt instanceof Date
+    ? data.supersededAt
+    : new Date(data.supersededAt);
+  if (Number.isNaN(supersededAt.getTime())) {
+    return false;
+  }
+  return supersededAt < cutoffDate;
+}
+
 const voiceLimitForTier = (tier) => (tier === 'pro' ? 150 : tier === 'plus' ? 50 : 10);
 
 test('highestSubscriptionTier prefers pro over plus over free', () => {
@@ -220,4 +242,42 @@ test('migrationUsageKeysForDonorTier skips usage keys for free donor', () => {
   const plusKeys = migrationUsageKeysForDonorTier('plus');
   assert.ok(plusKeys.includes('voiceActionsUsed'));
   assert.ok(plusKeys.includes('photoScansUsed'));
+});
+
+test('filterActiveICloudPeerDocs excludes superseded donor docs', () => {
+  const docs = [
+    { data: () => ({ subscriptionTier: 'pro', voiceActionsUsed: 5 }) },
+    { data: () => ({ subscriptionTier: 'pro', voiceActionsUsed: 5, supersededBy: 'newUid' }) },
+  ];
+  const active = filterActiveICloudPeerDocs(docs);
+  assert.equal(active.length, 1);
+  assert.equal(active[0].data().voiceActionsUsed, 5);
+});
+
+test('evaluateAggregatedUsageLimitSync ignores superseded peers when filtered', () => {
+  const docs = filterActiveICloudPeerDocs([
+    { data: () => ({ subscriptionTier: 'pro', voiceActionsUsed: 5 }) },
+    { data: () => ({ subscriptionTier: 'pro', voiceActionsUsed: 5, supersededBy: 'abc' }) },
+  ]);
+  const result = evaluateAggregatedUsageLimitSync({
+    docs,
+    usageField: 'voiceActionsUsed',
+    userData: { subscriptionTier: 'pro', voiceActionsUsed: 5 },
+    limitForTier: voiceLimitForTier,
+  });
+  assert.equal(result.totalUsed, 5);
+  assert.equal(result.canProceed, true);
+});
+
+test('isSafeToDeleteSupersededUser requires supersededAt before cutoff', () => {
+  const cutoff = new Date('2026-01-01T00:00:00Z');
+  assert.equal(
+    isSafeToDeleteSupersededUser({ supersededBy: 'new', supersededAt: new Date('2025-12-01') }, cutoff),
+    true
+  );
+  assert.equal(
+    isSafeToDeleteSupersededUser({ supersededBy: 'new', supersededAt: new Date('2026-02-01') }, cutoff),
+    false
+  );
+  assert.equal(isSafeToDeleteSupersededUser({ subscriptionTier: 'pro' }, cutoff), false);
 });

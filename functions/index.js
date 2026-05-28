@@ -27,6 +27,7 @@ const PRO_VOICE_LIMIT = 300;
 const PRO_PHOTO_LIMIT = 150;
 
 const CLEANUP_FREE_USER_DAYS = 45;
+const CLEANUP_SUPERSEDED_USER_DAYS = 30;
 const CLEANUP_BATCH_SIZE = 250;
 const CLEANUP_MAX_PAGES = 8;
 
@@ -410,10 +411,72 @@ function highestSubscriptionTier(tierA, tierB) {
   return a >= b ? (tierA || 'free') : (tierB || 'free');
 }
 
+/** True when this users/* doc was replaced by a newer Firebase uid (post-migration). */
+function isUserDocSuperseded(data) {
+  const by = data?.supersededBy;
+  return by != null && String(by).trim() !== '';
+}
+
+/** Active iCloud peers only — superseded donor docs must not affect tier/usage aggregation. */
+function filterActiveICloudPeerDocs(docs) {
+  return docs.filter((doc) => !isUserDocSuperseded(doc.data()));
+}
+
 async function queryUserDocsByICloudID(db, iCloudID) {
   if (!iCloudID) return [];
   const snapshot = await db.collection('users').where('iCloudID', '==', iCloudID).get();
-  return snapshot.docs;
+  return filterActiveICloudPeerDocs(snapshot.docs);
+}
+
+/**
+ * Mark a prior users/* doc as superseded after uid migration (best-effort, idempotent).
+ */
+async function markUserDocSuperseded(db, donorUid, successorUid) {
+  if (!donorUid || !successorUid || donorUid === successorUid) {
+    return;
+  }
+  try {
+    const donorRef = db.collection('users').doc(String(donorUid));
+    const snap = await donorRef.get();
+    if (!snap.exists) {
+      return;
+    }
+    const data = snap.data() || {};
+    const existingSuccessor = data.supersededBy != null ? String(data.supersededBy) : '';
+    if (existingSuccessor && existingSuccessor !== String(successorUid)) {
+      console.warn(
+        `☁️ supersede skip: donor ${String(donorUid).substring(0, 8)}… already superseded by ${existingSuccessor.substring(0, 8)}…`
+      );
+      return;
+    }
+    if (existingSuccessor === String(successorUid)) {
+      return;
+    }
+    await donorRef.set(
+      {
+        supersededBy: String(successorUid),
+        supersededAt: admin.firestore.FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
+    console.log(
+      `☁️ marked superseded: ${String(donorUid).substring(0, 8)}… → ${String(successorUid).substring(0, 8)}…`
+    );
+  } catch (err) {
+    console.error(`☁️ markUserDocSuperseded failed: ${err.message}`);
+  }
+}
+
+/** Client uid rotation sets migratedFromUid on the new doc — mark the donor superseded on next backend touch. */
+async function applySupersedeFromMigratedFromUid(db, currentUid, userData) {
+  const migratedFrom = userData?.migratedFromUid;
+  if (migratedFrom == null || String(migratedFrom).trim() === '') {
+    return;
+  }
+  if (String(migratedFrom) === String(currentUid)) {
+    return;
+  }
+  await markUserDocSuperseded(db, String(migratedFrom), String(currentUid));
 }
 
 /**
@@ -649,7 +712,9 @@ async function migrateFromPreviousICloudSession(db, currentRef, currentUid, iClo
       .where('iCloudID', '==', iCloudID)
       .get();
 
-    const candidates = snapshot.docs.filter((doc) => doc.id !== currentUid);
+    const candidates = snapshot.docs.filter(
+      (doc) => doc.id !== currentUid && !isUserDocSuperseded(doc.data())
+    );
     if (candidates.length === 0) return;
 
     const scored = candidates.map((doc) => {
@@ -705,6 +770,7 @@ async function migrateFromPreviousICloudSession(db, currentRef, currentUid, iClo
 
     await currentRef.set(payload, { merge: true });
     await repointAppleSubscriptionMappings(db, donor.doc.id, currentUid);
+    await markUserDocSuperseded(db, donor.doc.id, currentUid);
 
     console.log(
       `☁️ iCloud migration: ${donor.doc.id.substring(0, 8)}… → ${currentUid.substring(0, 8)}… (tier=${donor.data.subscriptionTier || 'free'})`
@@ -759,7 +825,7 @@ async function ensureUserDocument(db, userId, deviceID, iCloudIDRaw) {
   }
 
   const doc = await userRef.get();
-  return doc.data() || {
+  const finalData = doc.data() || {
     voiceActionsUsed: 0,
     voiceActionsLimit: FREE_VOICE_LIMIT,
     voiceActionsDayKey: getMonthKey(),
@@ -770,6 +836,8 @@ async function ensureUserDocument(db, userId, deviceID, iCloudIDRaw) {
     monthlyTokens: 0,
     subscriptionTier: 'free',
   };
+  await applySupersedeFromMigratedFromUid(db, userId, finalData);
+  return finalData;
 }
 
 async function ensureMonthlyVoiceReset(userRef, userData) {
@@ -836,6 +904,9 @@ function getUserLastActivity(data) {
 }
 
 function isSafeToDeleteFreeUser(data, cutoffDate) {
+  if (isUserDocSuperseded(data)) {
+    return false;
+  }
   const tier = String(data.subscriptionTier || 'free');
   if (tier !== 'free') return false;
   if (data.subscriptionProductId || data.subscriptionExpiresAt || data.subscriptionVerifiedAt) {
@@ -847,6 +918,17 @@ function isSafeToDeleteFreeUser(data, cutoffDate) {
   const lastActivity = getUserLastActivity(data);
   if (!lastActivity) return false;
   return lastActivity < cutoffDate;
+}
+
+function isSafeToDeleteSupersededUser(data, cutoffDate) {
+  if (!isUserDocSuperseded(data)) {
+    return false;
+  }
+  const supersededAt = parseStoreKitDate(data.supersededAt);
+  if (!supersededAt) {
+    return false;
+  }
+  return supersededAt < cutoffDate;
 }
 
 // ═══════════════════════════════════════════════════════
@@ -1583,6 +1665,61 @@ exports.cleanupStaleFreeUsers = onSchedule(
     }
 
     console.log(`🧹 cleanupStaleFreeUsers done: scanned=${scannedTotal} deleted=${deletedTotal}`);
+  }
+);
+
+exports.cleanupSupersededUsers = onSchedule(
+  {
+    region: 'us-central1',
+    schedule: 'every 24 hours',
+    timeoutSeconds: 540,
+    memory: '256MiB',
+  },
+  async () => {
+    const db = admin.firestore();
+    const cutoffDate = new Date(Date.now() - CLEANUP_SUPERSEDED_USER_DAYS * 24 * 60 * 60 * 1000);
+    console.log(`🧹 cleanupSupersededUsers: cutoff=${cutoffDate.toISOString()}`);
+
+    let lastDoc = null;
+    let deletedTotal = 0;
+    let scannedTotal = 0;
+
+    for (let page = 0; page < CLEANUP_MAX_PAGES; page += 1) {
+      let query = db.collection('users')
+        .where('supersededBy', '!=', null)
+        .orderBy('supersededBy')
+        .limit(CLEANUP_BATCH_SIZE);
+      if (lastDoc) {
+        query = query.startAfter(lastDoc);
+      }
+      const snapshot = await query.get();
+      if (snapshot.empty) {
+        break;
+      }
+
+      const batch = db.batch();
+      let batchDeletes = 0;
+      snapshot.docs.forEach((doc) => {
+        scannedTotal += 1;
+        const data = doc.data() || {};
+        if (isSafeToDeleteSupersededUser(data, cutoffDate)) {
+          batch.delete(doc.ref);
+          batchDeletes += 1;
+        }
+      });
+
+      if (batchDeletes > 0) {
+        await batch.commit();
+        deletedTotal += batchDeletes;
+      }
+
+      lastDoc = snapshot.docs[snapshot.docs.length - 1];
+      if (snapshot.size < CLEANUP_BATCH_SIZE) {
+        break;
+      }
+    }
+
+    console.log(`🧹 cleanupSupersededUsers done: scanned=${scannedTotal} deleted=${deletedTotal}`);
   }
 );
 
