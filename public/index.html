@@ -369,7 +369,7 @@
             position: relative;
             border: 1px solid var(--border);
             border-radius: 20px;
-            padding: 40px;
+            padding: 28px 24px;
             background: rgba(19,19,30,0.4);
             backdrop-filter: blur(10px);
             transition: all 0.3s;
@@ -496,33 +496,17 @@
 
         .wave-bars {
             display: flex;
-            align-items: flex-end;
+            align-items: center;
             gap: 4px;
             height: 60px;
             margin: 20px 0;
         }
 
-        .wave-bars::before {
-            content: '';
+        .wave-bar {
             flex: 1;
-            height: 40%;
             background: var(--accent);
-            border-radius: 2px;
-            animation: wave 0.6s ease-in-out infinite;
-        }
-
-        .wave-bars::after {
-            content: '';
-            flex: 1;
-            height: 60%;
-            background: var(--accent);
-            border-radius: 2px;
-            animation: wave 0.6s ease-in-out infinite 0.1s;
-        }
-
-        @keyframes wave {
-            0%, 100% { height: 20%; }
-            50% { height: 100%; }
+            border-radius: 3px;
+            min-height: 4px;
         }
 
         .wave-text-preview {
@@ -553,7 +537,7 @@
 
         .steps-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            grid-template-columns: repeat(4, 1fr);
             gap: 40px;
             margin-top: 60px;
         }
@@ -589,7 +573,7 @@
         /* PRICING */
         .pricing-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            grid-template-columns: repeat(4, 1fr);
             gap: 24px;
             margin-top: 60px;
         }
@@ -597,7 +581,7 @@
         .price-card {
             border: 1px solid var(--border);
             border-radius: 20px;
-            padding: 40px;
+            padding: 28px 24px;
             background: rgba(19,19,30,0.4);
             backdrop-filter: blur(10px);
             position: relative;
@@ -639,7 +623,7 @@
         }
 
         .price-amount {
-            font-size: 2.5rem;
+            font-size: 2.1rem;
             font-weight: 800;
             color: var(--accent);
             margin-bottom: 8px;
@@ -779,9 +763,30 @@
                 gap: 30px;
             }
 
-            .pricing-grid { grid-template-columns: 1fr; max-width: 400px; }
+            .pricing-grid { grid-template-columns: repeat(2, 1fr); max-width: 100%; }
+            .price-card.featured { transform: none; }
             .footer-inner { flex-direction: column; gap: 20px; text-align: center; }
         }
+    
+        @media (min-width: 1200px) {
+            .pricing-grid {
+                grid-template-columns: repeat(4, 1fr);
+                gap: 20px;
+            }
+        }
+        @media (max-width: 1199px) and (min-width: 700px) {
+            .pricing-grid {
+                grid-template-columns: repeat(2, 1fr);
+            }
+            .price-card.featured { transform: none; }
+        }
+        @media (max-width: 699px) {
+            .pricing-grid {
+                grid-template-columns: 1fr;
+            }
+            .price-card.featured { transform: none; }
+        }
+
     </style>
 </head>
 <body>
@@ -1050,6 +1055,47 @@
             <p>&copy; 2025 Notae. All rights reserved. | Notae — Think Out Loud.</p>
         </div>
     </footer>
+
+
+    <script>
+    // Waveform animation - 12 bars
+    (function() {
+        const container = document.getElementById('waveBars');
+        if (!container) return;
+
+        const BAR_COUNT = 12;
+        const bars = [];
+
+        // Create 12 bars
+        for (let i = 0; i < BAR_COUNT; i++) {
+            const bar = document.createElement('div');
+            bar.className = 'wave-bar';
+            bar.style.height = '20%';
+            container.appendChild(bar);
+            bars.push(bar);
+        }
+
+        // Each bar has its own phase offset for natural wave look
+        const phases = bars.map((_, i) => (i / BAR_COUNT) * Math.PI * 2);
+        const speeds = bars.map(() => 0.6 + Math.random() * 0.4);
+        let t = 0;
+
+        function animate() {
+            t += 0.04;
+            bars.forEach((bar, i) => {
+                // Combine two sine waves for organic movement
+                const v = Math.sin(t * speeds[i] + phases[i]) * 0.5
+                        + Math.sin(t * speeds[i] * 1.7 + phases[i] * 0.6) * 0.3;
+                const pct = Math.max(8, Math.round((v + 0.8) * 55));
+                bar.style.height = pct + '%';
+                // Slight opacity variation
+                bar.style.opacity = 0.6 + (v + 1) * 0.2;
+            });
+            requestAnimationFrame(animate);
+        }
+        animate();
+    })();
+    </script>
 
 </body>
 </html>
